@@ -1,4 +1,4 @@
-use std::{env, error::Error, process::ExitCode};
+use std::{env, error::Error, process::ExitCode, time::Duration};
 
 use image::{DynamicImage, ImageBuffer, Rgb};
 use mirajazz::{
@@ -15,6 +15,7 @@ const N4_PRO_PROTOCOL_VERSION: usize = 3;
 const N4_PRO_KEY_COUNT: usize = 14;
 
 const N4_PRO_ENCODER_COUNT: usize = 3;
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 const BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat {
     mode: ImageMode::JPEG,
@@ -43,7 +44,10 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
     let firmware = Device::read_firmware_version(&raw_device).await?;
     let serial_number = raw_device.serial_number.as_deref().unwrap_or("unknown");
 
-    let firmware = firmware.as_deref().unwrap_or("unknown").trim_end_matches('\0');
+    let firmware = firmware
+        .as_deref()
+        .unwrap_or("unknown")
+        .trim_end_matches('\0');
 
     println!(
         "Communication succeeded: {vendor_id:04x}:{product_id:04x}, serial {serial_number}, firmware {firmware}"
@@ -64,12 +68,21 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
     }
     device.flush().await?;
 
-    println!("Uploaded test images to {} button displays.", device.key_count());
+    println!(
+        "Uploaded test images to {} button displays.",
+        device.key_count()
+    );
     println!("Listening for button and touch events; press Control-C to exit.");
 
     let reader = device.get_reader(log_input);
+    let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
+    keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
-        reader.read(None).await?;
+        tokio::select! {
+            _ = keep_alive.tick() => device.keep_alive().await?,
+            input = reader.read(None) => { input?; }
+        }
     }
 }
 
