@@ -1,11 +1,15 @@
 use std::{env, error::Error, process::ExitCode, time::Duration};
 
+mod event;
+
 use image::{DynamicImage, ImageBuffer, Rgb};
 use mirajazz::{
     device::{Device, DeviceQuery, list_devices},
     error::MirajazzError,
     types::{DeviceInput, ImageFormat, ImageMirroring, ImageMode, ImageRotation},
 };
+
+use crate::event::{DeviceEvent, RawDeviceInput};
 
 const HID_USAGE_PAGE: u16 = 0xffa0;
 const HID_USAGE_ID: u16 = 1;
@@ -97,13 +101,14 @@ fn device_ids(arguments: impl Iterator<Item = String>) -> Result<(u16, u16), Box
 }
 
 fn log_input(control: u8, state: u8) -> Result<DeviceInput, MirajazzError> {
-    let action = match state {
-        0 => "released",
-        _ => "pressed",
-    };
+    let raw = RawDeviceInput::new(control, state);
+    let input = raw.into_device_input();
+    let decoded_raw = RawDeviceInput::try_from(input.clone())
+        .expect("RawDeviceInput always encodes as a two-value EncoderTwist");
+    let event = DeviceEvent::from(decoded_raw);
 
-    println!("Control {control}: {action} (raw state {state})");
-    Ok(DeviceInput::NoData)
+    println!("{event:?} (raw control {control}, state {state})");
+    Ok(input)
 }
 
 fn test_image(key: u8) -> DynamicImage {
