@@ -16,17 +16,41 @@ const HID_USAGE_ID: u16 = 1;
 const MIRABOX_VENDOR_ID: u16 = 0x5548;
 const N4_PRO_PRODUCT_ID: u16 = 0x1021;
 const N4_PRO_PROTOCOL_VERSION: usize = 3;
-const N4_PRO_KEY_COUNT: usize = 14;
+const N4_PRO_BUTTON_COUNT: usize = 10;
+const N4_PRO_VIRTUAL_BUTTON_COUNT: usize = 4;
+const N4_PRO_KEY_COUNT: usize = N4_PRO_BUTTON_COUNT + N4_PRO_VIRTUAL_BUTTON_COUNT;
+const N4_PRO_PHYSICAL_BUTTON_IMAGE_KEYS: [u8; N4_PRO_BUTTON_COUNT] =
+    [10, 11, 12, 13, 14, 5, 6, 7, 8, 9];
 
 const N4_PRO_ENCODER_COUNT: usize = 3;
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 const BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat {
     mode: ImageMode::JPEG,
-    size: (96, 96),
-    rotation: ImageRotation::Rot0,
+    size: (128, 128),
+    rotation: ImageRotation::Rot180,
     mirror: ImageMirroring::None,
 };
+
+const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat {
+    mode: ImageMode::JPEG,
+    size: (203, 128),
+    rotation: ImageRotation::Rot180,
+    mirror: ImageMirroring::None,
+};
+
+const DIGIT_GLYPHS: [[&str; 5]; 10] = [
+    ["111", "1 1", "1 1", "1 1", "111"],
+    [" 1 ", "11 ", " 1 ", " 1 ", "111"],
+    ["111", "  1", "111", "1  ", "111"],
+    ["111", "  1", "111", "  1", "111"],
+    ["1 1", "1 1", "111", "  1", "  1"],
+    ["111", "1  ", "111", "  1", "111"],
+    ["111", "1  ", "111", "1 1", "111"],
+    ["111", "  1", "  1", "  1", "  1"],
+    ["111", "1 1", "111", "1 1", "111"],
+    ["111", "1 1", "111", "  1", "111"],
+];
 
 #[tokio::main]
 async fn main() -> Result<ExitCode, Box<dyn Error>> {
@@ -65,16 +89,32 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
     )
     .await?;
 
-    for key in 0..N4_PRO_KEY_COUNT as u8 {
+    for virtual_button in 0..N4_PRO_VIRTUAL_BUTTON_COUNT as u8 {
         device
-            .set_button_image(key, BUTTON_IMAGE_FORMAT, test_image(key))
+            .set_button_image(
+                virtual_button,
+                VIRTUAL_BUTTON_IMAGE_FORMAT,
+                test_image(virtual_button, VIRTUAL_BUTTON_IMAGE_FORMAT.size),
+            )
+            .await?;
+    }
+
+    for (button, key) in N4_PRO_PHYSICAL_BUTTON_IMAGE_KEYS.into_iter().enumerate() {
+        device
+            .set_button_image(
+                key,
+                BUTTON_IMAGE_FORMAT,
+                test_image(button as u8, BUTTON_IMAGE_FORMAT.size),
+            )
             .await?;
     }
     device.flush().await?;
 
     println!(
-        "Uploaded test images to {} button displays.",
-        device.key_count()
+        "Uploaded test images to {} button displays ({} physical, {} virtual).",
+        device.key_count(),
+        N4_PRO_BUTTON_COUNT,
+        N4_PRO_VIRTUAL_BUTTON_COUNT
     );
     println!("Listening for button and touch events; press Control-C to exit.");
 
@@ -111,22 +151,54 @@ fn log_input(control: u8, state: u8) -> Result<DeviceInput, MirajazzError> {
     Ok(input)
 }
 
-fn test_image(key: u8) -> DynamicImage {
+fn test_image(key: u8, (width, height): (usize, usize)) -> DynamicImage {
+    let (width, height) = (width as u32, height as u32);
     let color = [
         key.wrapping_mul(47).wrapping_add(40),
         key.wrapping_mul(83).wrapping_add(90),
         key.wrapping_mul(131).wrapping_add(140),
     ];
+    let border = 6;
 
-    let image = ImageBuffer::from_fn(96, 96, |x, y| {
-        if x < 6 || y < 6 || x >= 90 || y >= 90 {
+    let mut image = ImageBuffer::from_fn(width, height, |x, y| {
+        if x < border || y < border || x >= width - border || y >= height - border {
             Rgb([255, 255, 255])
         } else {
             Rgb(color)
         }
     });
+    draw_button_number(&mut image, key, width, height);
 
     DynamicImage::ImageRgb8(image)
+}
+
+fn draw_button_number(
+    image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+    number: u8,
+    width: u32,
+    height: u32,
+) {
+    let scale = (width.min(height) / 10).max(1);
+    let glyph_width = 3 * scale;
+    let glyph_height = 5 * scale;
+    let origin_x = (width - glyph_width) / 2;
+    let origin_y = (height - glyph_height) / 2;
+
+    for (row, pattern) in DIGIT_GLYPHS[number as usize].iter().enumerate() {
+        for (column, pixel) in pattern.bytes().enumerate() {
+            if pixel == b'1' {
+                for y in 0..scale {
+                    for x in 0..scale {
+                        image.put_pixel(
+                            origin_x + column as u32 * scale + x,
+                            origin_y + row as u32 * scale + y,
+                            Rgb([255, 255, 255]),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn parse_hex_id(value: &str) -> Result<u16, Box<dyn Error>> {
