@@ -1,7 +1,8 @@
-use std::{env, error::Error, process::ExitCode, time::Duration};
+use std::{error::Error, process::ExitCode, time::Duration};
 
 mod event;
 
+use clap::{Args, Parser, Subcommand};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use mirajazz::{
     device::{Device, DeviceQuery, list_devices},
@@ -39,6 +40,32 @@ const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat {
     mirror: ImageMirroring::None,
 };
 
+#[derive(Parser)]
+#[command(about = "Communicate with a MiraBox N4 Pro")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Upload test images and log input events.
+    Test(DeviceIds),
+    /// Send periodic keep-alive messages.
+    Run(DeviceIds),
+}
+
+#[derive(Args)]
+struct DeviceIds {
+    /// USB vendor ID, in hexadecimal.
+    #[arg(value_parser = parse_hex_id)]
+    vendor_id: Option<u16>,
+
+    /// USB product ID, in hexadecimal.
+    #[arg(value_parser = parse_hex_id, requires = "vendor_id")]
+    product_id: Option<u16>,
+}
+
 const DIGIT_GLYPHS: [[&str; 5]; 10] = [
     ["111", "1 1", "1 1", "1 1", "111"],
     [" 1 ", "11 ", " 1 ", " 1 ", "111"],
@@ -54,7 +81,12 @@ const DIGIT_GLYPHS: [[&str; 5]; 10] = [
 
 #[tokio::main]
 async fn main() -> Result<ExitCode, Box<dyn Error>> {
-    let (vendor_id, product_id) = device_ids(env::args().skip(1))?;
+    let cli = Cli::parse();
+    let (command, device_ids) = match cli.command {
+        Command::Test(device_ids) => (CommandKind::Test, device_ids),
+        Command::Run(device_ids) => (CommandKind::Run, device_ids),
+    };
+    let (vendor_id, product_id) = device_ids.resolve()?;
     let query = DeviceQuery::new(HID_USAGE_PAGE, HID_USAGE_ID, vendor_id, product_id);
     let devices = list_devices(&[query]).await?;
 
@@ -89,6 +121,29 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
     )
     .await?;
 
+    match command {
+        CommandKind::Test => Ok(test(&device).await?),
+        CommandKind::Run => Ok(run(&device).await?),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CommandKind {
+    Run,
+    Test,
+}
+
+impl DeviceIds {
+    fn resolve(self) -> Result<(u16, u16), Box<dyn Error>> {
+        match (self.vendor_id, self.product_id) {
+            (None, None) => Ok((MIRABOX_VENDOR_ID, N4_PRO_PRODUCT_ID)),
+            (Some(vendor_id), Some(product_id)) => Ok((vendor_id, product_id)),
+            _ => Err("vendor ID and product ID must be provided together".into()),
+        }
+    }
+}
+
+async fn test(device: &Device) -> Result<ExitCode, MirajazzError> {
     for virtual_button in 0..N4_PRO_VIRTUAL_BUTTON_COUNT as u8 {
         device
             .set_button_image(
@@ -130,13 +185,15 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
     }
 }
 
-fn device_ids(arguments: impl Iterator<Item = String>) -> Result<(u16, u16), Box<dyn Error>> {
-    let arguments = arguments.collect::<Vec<_>>();
+async fn run(device: &Device) -> Result<ExitCode, MirajazzError> {
+    println!("Sending keep-alives; press Control-C to exit.");
 
-    match arguments.as_slice() {
-        [] => Ok((MIRABOX_VENDOR_ID, N4_PRO_PRODUCT_ID)),
-        [vendor_id, product_id] => Ok((parse_hex_id(vendor_id)?, parse_hex_id(product_id)?)),
-        _ => Err("usage: mirabox [vendor-id product-id] (hexadecimal, e.g. 5548 1021)".into()),
+    let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
+    keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        keep_alive.tick().await;
+        device.keep_alive().await?;
     }
 }
 
@@ -201,8 +258,8 @@ fn draw_button_number(
     }
 }
 
-fn parse_hex_id(value: &str) -> Result<u16, Box<dyn Error>> {
+fn parse_hex_id(value: &str) -> Result<u16, String> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     u16::from_str_radix(value, 16)
-        .map_err(|_| format!("invalid hexadecimal USB identifier: {value}").into())
+        .map_err(|_| format!("invalid hexadecimal USB identifier: {value}"))
 }
