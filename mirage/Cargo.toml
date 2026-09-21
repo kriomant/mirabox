@@ -1,0 +1,10 @@
+[package]
+name = "mirage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+image.workspace = true
+mirabox = { path = "../mirabox" }
+tokio.workspace = true

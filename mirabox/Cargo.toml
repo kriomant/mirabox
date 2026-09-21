@@ -1,0 +1,12 @@
+[package]
+name = "mirabox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+image.workspace = true
+mirajazz.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
