@@ -1,6 +1,7 @@
-use std::{error::Error, process::ExitCode, time::Duration};
+use std::{collections::BTreeMap, error::Error, process::ExitCode, time::Duration};
 
 mod event;
+mod widget;
 
 use clap::{Args, Parser, Subcommand};
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -10,7 +11,10 @@ use mirajazz::{
     types::{DeviceInput, ImageFormat, ImageMirroring, ImageMode, ImageRotation},
 };
 
-use crate::event::{DeviceEvent, RawDeviceInput};
+use crate::{
+    event::{DeviceEvent, RawDeviceInput},
+    widget::{CounterWidget, Updated, Widget, WidgetEvent},
+};
 
 const HID_USAGE_PAGE: u16 = 0xffa0;
 const HID_USAGE_ID: u16 = 1;
@@ -133,6 +137,78 @@ enum CommandKind {
     Test,
 }
 
+struct WidgetImage {
+    key: u8,
+    format: ImageFormat,
+    image: DynamicImage,
+}
+
+struct WidgetRegistry {
+    widgets: BTreeMap<u8, Box<dyn Widget>>,
+    update_sender: tokio::sync::mpsc::UnboundedSender<u8>,
+}
+
+impl WidgetRegistry {
+    fn new(update_sender: tokio::sync::mpsc::UnboundedSender<u8>) -> Self {
+        Self {
+            widgets: BTreeMap::new(),
+            update_sender,
+        }
+    }
+
+    fn register(
+        &mut self,
+        button: u8,
+        make_widget: impl FnOnce(Updated) -> Box<dyn Widget>,
+    ) {
+        assert!(
+            (button as usize) < N4_PRO_PHYSICAL_BUTTON_IMAGE_KEYS.len(),
+            "widget binding must use a valid physical button number"
+        );
+
+        let update_sender = self.update_sender.clone();
+        let updated = Box::new(move || {
+            let _ = update_sender.send(button);
+        });
+        assert!(
+            self.widgets.insert(button, make_widget(updated)).is_none(),
+            "a widget is already registered for button {button}"
+        );
+    }
+
+    fn images(&self) -> Vec<WidgetImage> {
+        self.widgets
+            .iter()
+            .map(|(&button, widget)| Self::image_for(button, widget.as_ref()))
+            .collect()
+    }
+
+    fn handle_event(&mut self, button: u8, event: WidgetEvent) {
+        if let Some(widget) = self.widgets.get_mut(&button) {
+            widget.handle_event(event);
+        }
+    }
+
+    fn image(&self, button: u8) -> Option<WidgetImage> {
+        self.widgets
+            .get(&button)
+            .map(|widget| Self::image_for(button, widget.as_ref()))
+    }
+
+    fn image_for(button: u8, widget: &dyn Widget) -> WidgetImage {
+        let key = N4_PRO_PHYSICAL_BUTTON_IMAGE_KEYS
+            .get(button as usize)
+            .copied()
+            .expect("widget binding must use a valid physical button number");
+
+        WidgetImage {
+            key,
+            format: BUTTON_IMAGE_FORMAT,
+            image: widget.image(BUTTON_IMAGE_FORMAT.size),
+        }
+    }
+}
+
 impl DeviceIds {
     fn resolve(self) -> Result<(u16, u16), Box<dyn Error>> {
         match (self.vendor_id, self.product_id) {
@@ -173,39 +249,69 @@ async fn test(device: &Device) -> Result<ExitCode, MirajazzError> {
     );
     println!("Listening for button and touch events; press Control-C to exit.");
 
-    let reader = device.get_reader(log_input);
+    let reader = device.get_reader(encode_input);
     let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
     keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             _ = keep_alive.tick() => device.keep_alive().await?,
-            input = reader.read(None) => { input?; }
+            input = reader.read_input(None, encode_input) => {
+                let input = input?;
+                let raw = RawDeviceInput::try_from(input)
+                    .expect("encode_input always returns a two-value EncoderTwist");
+                let event = DeviceEvent::from(raw);
+                println!("{event:?} (raw control {}, state {})", raw.control, raw.state);
+            }
         }
     }
 }
 
 async fn run(device: &Device) -> Result<ExitCode, MirajazzError> {
-    println!("Sending keep-alives; press Control-C to exit.");
+    let (widget_update_sender, mut widget_update_receiver) =
+        tokio::sync::mpsc::unbounded_channel();
+    let mut widgets = WidgetRegistry::new(widget_update_sender);
+    widgets.register(0, |updated| Box::new(CounterWidget::new(updated)));
 
+    for image in widgets.images() {
+        device.set_button_image(image.key, image.format, image.image).await?;
+    }
+    device.flush().await?;
+
+    println!("Running widgets; press Control-C to exit.");
+
+    let reader = device.get_reader(encode_input);
     let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
     keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        keep_alive.tick().await;
-        device.keep_alive().await?;
+        tokio::select! {
+            _ = keep_alive.tick() => device.keep_alive().await?,
+            Some(button) = widget_update_receiver.recv() => {
+                if let Some(image) = widgets.image(button) {
+                    device.set_button_image(image.key, image.format, image.image).await?;
+                    device.flush().await?;
+                }
+            }
+            input = reader.read_input(None, encode_input) => {
+                let input = input?;
+                let raw = RawDeviceInput::try_from(input)
+                    .expect("encode_input always returns a two-value EncoderTwist");
+                if let DeviceEvent::Button { button, pressed } = DeviceEvent::from(raw) {
+                    let widget_event = if pressed {
+                        WidgetEvent::Pressed
+                    } else {
+                        WidgetEvent::Released
+                    };
+                    widgets.handle_event(button, widget_event);
+                }
+            }
+        }
     }
 }
 
-fn log_input(control: u8, state: u8) -> Result<DeviceInput, MirajazzError> {
-    let raw = RawDeviceInput::new(control, state);
-    let input = raw.into_device_input();
-    let decoded_raw = RawDeviceInput::try_from(input.clone())
-        .expect("RawDeviceInput always encodes as a two-value EncoderTwist");
-    let event = DeviceEvent::from(decoded_raw);
-
-    println!("{event:?} (raw control {control}, state {state})");
-    Ok(input)
+fn encode_input(control: u8, state: u8) -> Result<DeviceInput, MirajazzError> {
+    Ok(RawDeviceInput::new(control, state).into_device_input())
 }
 
 fn test_image(key: u8, (width, height): (usize, usize)) -> DynamicImage {
