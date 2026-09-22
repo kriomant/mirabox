@@ -2,7 +2,7 @@
 
 mod event;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use image::DynamicImage;
 use mirajazz::{
@@ -12,7 +12,10 @@ use mirajazz::{
     types::{DeviceInput, ImageFormat, ImageMirroring, ImageMode, ImageRotation},
 };
 
-pub use event::{DeviceEvent, KnobDirection, RawDeviceInput, SwipeDirection};
+pub use event::{
+    DeviceEvent, EnrichedDeviceEvent, EventParser, HorizontalDirection, KnobDirection,
+    RawDeviceInput, SwipeDirection, VerticalDirection,
+};
 
 const HID_USAGE_PAGE: u16 = 0xffa0;
 const HID_USAGE_ID: u16 = 1;
@@ -46,6 +49,7 @@ pub const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat {
 pub struct MiraboxN4Pro {
     device: Device,
     reader: Arc<DeviceStateReader>,
+    event_parser: Mutex<EventParser>,
 }
 
 impl MiraboxN4Pro {
@@ -70,7 +74,11 @@ impl MiraboxN4Pro {
         .await?;
         let reader = device.get_reader(encode_input);
 
-        Ok(Some(Self { device, reader }))
+        Ok(Some(Self {
+            device,
+            reader,
+            event_parser: Mutex::new(EventParser::new()),
+        }))
     }
 
     /// Returns the zero-based physical button's image key, if the button exists.
@@ -104,12 +112,17 @@ impl MiraboxN4Pro {
         self.device.keep_alive().await
     }
 
-    /// Waits for the next device input report and decodes it.
+    /// Waits for the next device input report and decodes it with inferred state.
     ///
     /// `None` denotes a transport report that did not contain input data.
-    pub async fn read_event(&self) -> Result<Option<DeviceEvent>, MirajazzError> {
+    pub async fn read_event(&self) -> Result<Option<EnrichedDeviceEvent>, MirajazzError> {
         let input = self.reader.read_input(None, encode_input).await?;
-        Ok(RawDeviceInput::try_from(input).ok().map(DeviceEvent::from))
+        Ok(RawDeviceInput::try_from(input).ok().and_then(|raw| {
+            self.event_parser
+                .lock()
+                .expect("event parser mutex is only held while parsing a report")
+                .parse(raw)
+        }))
     }
 
     /// Returns the device serial number.

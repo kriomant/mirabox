@@ -36,15 +36,20 @@ active.
 | --- | --- | --- |
 | `(0, 0..=3)` | `Touch { virtual_button }` | Periodic touch sample, roughly 20 Hz |
 | `(64..=67, 0)` | `TouchReleased { virtual_button: control - 64 }` | Release on virtual buttons 0 through 3 |
-| `(56, 0)` | `Swipe { Right }` | Swipe right |
-| `(57, 0)` | `Swipe { Left }` | Swipe left |
-| `(177, 0)` | `Swipe { Up }` | Swipe up |
-| `(178, 0)` | `Swipe { Down }` | Swipe down |
+| `(56, 0)` | `DeviceEvent::Swipe { Right }` | Swipe right |
+| `(57, 0)` | `DeviceEvent::Swipe { Left }` | Swipe left |
+| `(177, 0)` | `DeviceEvent::Swipe { Up }` | Swipe up |
+| `(178, 0)` | `DeviceEvent::Swipe { Down }` | Swipe down |
 
-At the start of a touch, the device emits `(0, 0)`. This is indistinguishable
-from a periodic sample for virtual button 0, so `DeviceEvent::Touch {
-virtual_button: 0 }` intentionally represents both. Distinguishing touch start
-requires tracking the preceding report sequence.
+The first `(0, state)` report of a touch always has `state = 1`, regardless of
+which virtual button was initially touched. `EventParser` suppresses that
+marker. It uses the remaining touch samples to emit
+`EnrichedDeviceEvent::HorizontalSwipe { start_virtual_button,
+end_virtual_button, .. }`. Vertical gestures produce
+`EnrichedDeviceEvent::VerticalSwipe { virtual_button, .. }` with just their
+source button. A swipe without the required touch samples, along with unknown
+raw reports, is dropped. `MiraboxN4Pro::read_event` returns these enriched
+events; `DeviceEvent` remains the stateless raw-report decoding API.
 
 Touch input is suppressed while a physical button is pressed. In the opposite
 direction, physical button events continue to report while a touch is active.

@@ -48,6 +48,18 @@ pub enum SwipeDirection {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HorizontalDirection {
+    Right,
+    Left,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerticalDirection {
+    Up,
+    Down,
+}
+
 /// A semantically decoded MiraBox N4 Pro input event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeviceEvent {
@@ -63,10 +75,6 @@ pub enum DeviceEvent {
         direction: KnobDirection,
     },
     /// A touch sample reports virtual-button index 0 through 3.
-    ///
-    /// The raw report `(0, 0)` is also emitted at the start of a touch, so the
-    /// start of contact cannot be distinguished from virtual-button 0 using a
-    /// single report alone.
     Touch {
         virtual_button: u8,
     },
@@ -77,15 +85,139 @@ pub enum DeviceEvent {
     Swipe {
         direction: SwipeDirection,
     },
-    Unknown {
-        control: u8,
-        state: u8,
+}
+
+/// A decoded event with state inferred from preceding input reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrichedDeviceEvent {
+    Button {
+        button: u8,
+        pressed: bool,
+    },
+    KnobPressed {
+        knob: u8,
+    },
+    KnobRotated {
+        knob: u8,
+        direction: KnobDirection,
+    },
+    Touch {
+        button: u8,
+    },
+    TouchReleased {
+        button: u8,
+    },
+    /// A swipe between horizontally adjacent virtual buttons.
+    HorizontalSwipe {
+        start_button: u8,
+        end_button: u8,
+        direction: HorizontalDirection,
+    },
+    /// A vertical swipe on a virtual button.
+    VerticalSwipe {
+        virtual_button: u8,
+        direction: VerticalDirection,
     },
 }
 
-impl From<RawDeviceInput> for DeviceEvent {
-    fn from(raw: RawDeviceInput) -> Self {
-        match (raw.control, raw.state) {
+#[derive(Debug, Default)]
+enum Touch {
+    #[default]
+    None,
+    Pending,
+    Active {
+        start_button: u8,
+        end_button: u8,
+    },
+}
+
+/// Decodes input reports while retaining touch-gesture state.
+///
+/// The device's first touch report always has `state = 1`, regardless of the
+/// touched button, so it is suppressed. Subsequent samples define a gesture's
+/// start and end buttons for swipe events.
+#[derive(Debug, Default)]
+pub struct EventParser {
+    active_touch: Touch,
+}
+
+impl EventParser {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn parse(&mut self, raw: RawDeviceInput) -> Option<EnrichedDeviceEvent> {
+        let event = DeviceEvent::try_from(raw).ok()?;
+
+        match event {
+            DeviceEvent::Touch { virtual_button } => {
+                match self.active_touch {
+                    // First touch event doesn't have button information, skip it
+                    Touch::None => {
+                        self.active_touch = Touch::Pending;
+                        None
+                    }
+                    Touch::Pending => {
+                        self.active_touch = Touch::Active {
+                            start_button: virtual_button,
+                            end_button: virtual_button,
+                        };
+                        Some(EnrichedDeviceEvent::Touch { button: virtual_button })
+                    }
+                    Touch::Active { ref mut end_button, .. } => {
+                        *end_button = virtual_button;
+                        Some(EnrichedDeviceEvent::Touch { button: virtual_button })
+                    }
+                }
+            }
+            DeviceEvent::TouchReleased { virtual_button } => {
+                self.active_touch = Touch::None;
+                Some(EnrichedDeviceEvent::TouchReleased {
+                    button: virtual_button,
+                })
+            }
+            DeviceEvent::Swipe { direction } => {
+                let Touch::Active { start_button, end_button } = std::mem::take(&mut self.active_touch) else {
+                    return None
+                };
+
+                match direction {
+                    SwipeDirection::Left => Some(EnrichedDeviceEvent::HorizontalSwipe {
+                        start_button,
+                        end_button,
+                        direction: HorizontalDirection::Left,
+                    }),
+                    SwipeDirection::Right => Some(EnrichedDeviceEvent::HorizontalSwipe {
+                        start_button,
+                        end_button,
+                        direction: HorizontalDirection::Right,
+                    }),
+                    SwipeDirection::Up => Some(EnrichedDeviceEvent::VerticalSwipe {
+                        virtual_button: start_button,
+                        direction: VerticalDirection::Up,
+                    }),
+                    SwipeDirection::Down => Some(EnrichedDeviceEvent::VerticalSwipe {
+                        virtual_button: start_button,
+                        direction: VerticalDirection::Down,
+                    }),
+                }
+            }
+            DeviceEvent::Button { button, pressed } => {
+                Some(EnrichedDeviceEvent::Button { button, pressed })
+            }
+            DeviceEvent::KnobPressed { knob } => Some(EnrichedDeviceEvent::KnobPressed { knob }),
+            DeviceEvent::KnobRotated { knob, direction } => {
+                Some(EnrichedDeviceEvent::KnobRotated { knob, direction })
+            }
+        }
+    }
+}
+
+impl TryFrom<RawDeviceInput> for DeviceEvent {
+    type Error = RawDeviceInput;
+
+    fn try_from(raw: RawDeviceInput) -> Result<Self, Self::Error> {
+        let event = match (raw.control, raw.state) {
             (1..=10, 0) => Self::Button {
                 button: raw.control - 1,
                 pressed: false,
@@ -148,11 +280,10 @@ impl From<RawDeviceInput> for DeviceEvent {
             (178, 0) => Self::Swipe {
                 direction: SwipeDirection::Down,
             },
-            _ => Self::Unknown {
-                control: raw.control,
-                state: raw.state,
-            },
-        }
+            _ => return Err(raw),
+        };
+
+        Ok(event)
     }
 }
 
@@ -171,31 +302,31 @@ mod tests {
     #[test]
     fn decodes_known_events() {
         assert_eq!(
-            DeviceEvent::from(RawDeviceInput::new(1, 1)),
+            DeviceEvent::try_from(RawDeviceInput::new(1, 1)).unwrap(),
             DeviceEvent::Button {
                 button: 0,
                 pressed: true,
             }
         );
         assert_eq!(
-            DeviceEvent::from(RawDeviceInput::new(161, 0)),
+            DeviceEvent::try_from(RawDeviceInput::new(161, 0)).unwrap(),
             DeviceEvent::KnobRotated {
                 knob: 0,
                 direction: KnobDirection::Clockwise,
             }
         );
         assert_eq!(
-            DeviceEvent::from(RawDeviceInput::new(66, 0)),
+            DeviceEvent::try_from(RawDeviceInput::new(66, 0)).unwrap(),
             DeviceEvent::TouchReleased { virtual_button: 2 }
         );
         assert_eq!(
-            DeviceEvent::from(RawDeviceInput::new(56, 0)),
+            DeviceEvent::try_from(RawDeviceInput::new(56, 0)).unwrap(),
             DeviceEvent::Swipe {
                 direction: SwipeDirection::Right
             }
         );
         assert_eq!(
-            DeviceEvent::from(RawDeviceInput::new(57, 0)),
+            DeviceEvent::try_from(RawDeviceInput::new(57, 0)).unwrap(),
             DeviceEvent::Swipe {
                 direction: SwipeDirection::Left
             }
@@ -203,13 +334,59 @@ mod tests {
     }
 
     #[test]
-    fn retains_unrecognised_reports() {
+    fn associates_horizontal_swipes_with_start_and_end_virtual_buttons() {
+        let mut parser = EventParser::new();
+
+        // The first report starts contact but its state is not a button index.
+        assert_eq!(parser.parse(RawDeviceInput::new(0, 1)), None);
         assert_eq!(
-            DeviceEvent::from(RawDeviceInput::new(42, 99)),
-            DeviceEvent::Unknown {
-                control: 42,
-                state: 99,
-            }
+            parser.parse(RawDeviceInput::new(0, 2)),
+            Some(EnrichedDeviceEvent::Touch { button: 2 })
+        );
+        assert_eq!(
+            parser.parse(RawDeviceInput::new(0, 3)),
+            Some(EnrichedDeviceEvent::Touch { button: 3 })
+        );
+        assert_eq!(
+            parser.parse(RawDeviceInput::new(57, 0)),
+            Some(EnrichedDeviceEvent::HorizontalSwipe {
+                start_button: 2,
+                end_button: 3,
+                direction: HorizontalDirection::Left,
+            })
+        );
+    }
+
+    #[test]
+    fn associates_vertical_swipes_with_the_source_virtual_button() {
+        let mut parser = EventParser::new();
+
+        assert_eq!(parser.parse(RawDeviceInput::new(0, 1)), None);
+        assert_eq!(
+            parser.parse(RawDeviceInput::new(0, 2)),
+            Some(EnrichedDeviceEvent::Touch { button: 2 })
+        );
+        assert_eq!(
+            parser.parse(RawDeviceInput::new(177, 0)),
+            Some(EnrichedDeviceEvent::VerticalSwipe {
+                virtual_button: 2,
+                direction: VerticalDirection::Up,
+            })
+        );
+    }
+
+    #[test]
+    fn drops_swipes_without_touch_state_and_unknown_reports() {
+        let mut parser = EventParser::new();
+
+        assert_eq!(parser.parse(RawDeviceInput::new(0, 1)), None);
+        assert_eq!(parser.parse(RawDeviceInput::new(178, 0)), None);
+        // The incomplete gesture was reset, so this is a new ignored marker.
+        assert_eq!(parser.parse(RawDeviceInput::new(0, 2)), None);
+        assert_eq!(parser.parse(RawDeviceInput::new(42, 99)), None);
+        assert_eq!(
+            DeviceEvent::try_from(RawDeviceInput::new(42, 99)),
+            Err(RawDeviceInput::new(42, 99))
         );
     }
 }
