@@ -112,17 +112,32 @@ impl MiraboxN4Pro {
         self.device.keep_alive().await
     }
 
-    /// Waits for the next device input report and decodes it with inferred state.
+    /// Waits for the next raw device input report.
     ///
     /// `None` denotes a transport report that did not contain input data.
-    pub async fn read_event(&self) -> Result<Option<EnrichedDeviceEvent>, MirajazzError> {
+    pub async fn read_raw_input(&self) -> Result<Option<RawDeviceInput>, MirajazzError> {
         let input = self.reader.read_input(None, encode_input).await?;
-        Ok(RawDeviceInput::try_from(input).ok().and_then(|raw| {
-            self.event_parser
-                .lock()
-                .expect("event parser mutex is only held while parsing a report")
-                .parse(raw)
-        }))
+        Ok(RawDeviceInput::try_from(input).ok())
+    }
+
+    /// Waits for the next device input report and decodes it with inferred state.
+    ///
+    /// `None` denotes a transport report that did not contain input data or did
+    /// not result in an enriched event.
+    pub async fn read_event(&self) -> Result<Option<EnrichedDeviceEvent>, MirajazzError> {
+        let Some(raw) = self.read_raw_input().await? else {
+            return Ok(None);
+        };
+
+        let Ok(event) = DeviceEvent::try_from(raw) else {
+            return Ok(None);
+        };
+
+        Ok(self
+            .event_parser
+            .lock()
+            .expect("event parser mutex is only held while parsing a report")
+            .parse(event))
     }
 
     /// Returns the device serial number.

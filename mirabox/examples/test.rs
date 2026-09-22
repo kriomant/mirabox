@@ -1,7 +1,10 @@
 use std::{error::Error, time::Duration};
 
 use image::{DynamicImage, ImageBuffer, Rgb};
-use mirabox::{MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT, VIRTUAL_BUTTON_IMAGE_FORMAT};
+use mirabox::{
+    DeviceEvent, EventParser, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT,
+    VIRTUAL_BUTTON_IMAGE_FORMAT,
+};
 
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 const DIGIT_GLYPHS: [[&str; 5]; 10] = [
@@ -53,16 +56,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     device.flush().await?;
 
     println!("Uploaded test images to 14 button displays (10 physical, 4 virtual).");
-    println!("Listening for button and touch events; press Control-C to exit.");
+    println!("Listening for raw and enriched events; press Control-C to exit.");
 
+    let mut event_parser = EventParser::new();
     let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
     keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             _ = keep_alive.tick() => device.keep_alive().await?,
-            event = device.read_event() => {
-                if let Some(event) = event? {
-                    println!("{event:?}");
+            raw_input = device.read_raw_input() => {
+                if let Some(raw_input) = raw_input? {
+                    match DeviceEvent::try_from(raw_input) {
+                        Ok(event) => {
+                            println!("event: {event:?}");
+                            if let Some(event) = event_parser.parse(event) {
+                                println!("\x1b[1menriched: {event:?}\x1b[0m");
+                            }
+                        }
+                        Err(raw_input) => println!("\x1b[31mraw: {raw_input:?}\x1b[0m"),
+                    }
                 }
             }
         }

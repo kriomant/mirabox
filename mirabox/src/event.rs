@@ -146,9 +146,7 @@ impl EventParser {
         Self::default()
     }
 
-    pub fn parse(&mut self, raw: RawDeviceInput) -> Option<EnrichedDeviceEvent> {
-        let event = DeviceEvent::try_from(raw).ok()?;
-
+    pub fn parse(&mut self, event: DeviceEvent) -> Option<EnrichedDeviceEvent> {
         match event {
             DeviceEvent::Touch { virtual_button } => {
                 match self.active_touch {
@@ -338,17 +336,17 @@ mod tests {
         let mut parser = EventParser::new();
 
         // The first report starts contact but its state is not a button index.
-        assert_eq!(parser.parse(RawDeviceInput::new(0, 1)), None);
+        assert_eq!(parser.parse(device_event(0, 1)), None);
         assert_eq!(
-            parser.parse(RawDeviceInput::new(0, 2)),
+            parser.parse(device_event(0, 2)),
             Some(EnrichedDeviceEvent::Touch { button: 2 })
         );
         assert_eq!(
-            parser.parse(RawDeviceInput::new(0, 3)),
+            parser.parse(device_event(0, 3)),
             Some(EnrichedDeviceEvent::Touch { button: 3 })
         );
         assert_eq!(
-            parser.parse(RawDeviceInput::new(57, 0)),
+            parser.parse(device_event(57, 0)),
             Some(EnrichedDeviceEvent::HorizontalSwipe {
                 start_button: 2,
                 end_button: 3,
@@ -361,13 +359,13 @@ mod tests {
     fn associates_vertical_swipes_with_the_source_virtual_button() {
         let mut parser = EventParser::new();
 
-        assert_eq!(parser.parse(RawDeviceInput::new(0, 1)), None);
+        assert_eq!(parser.parse(device_event(0, 1)), None);
         assert_eq!(
-            parser.parse(RawDeviceInput::new(0, 2)),
+            parser.parse(device_event(0, 2)),
             Some(EnrichedDeviceEvent::Touch { button: 2 })
         );
         assert_eq!(
-            parser.parse(RawDeviceInput::new(177, 0)),
+            parser.parse(device_event(177, 0)),
             Some(EnrichedDeviceEvent::VerticalSwipe {
                 virtual_button: 2,
                 direction: VerticalDirection::Up,
@@ -379,14 +377,17 @@ mod tests {
     fn drops_swipes_without_touch_state_and_unknown_reports() {
         let mut parser = EventParser::new();
 
-        assert_eq!(parser.parse(RawDeviceInput::new(0, 1)), None);
-        assert_eq!(parser.parse(RawDeviceInput::new(178, 0)), None);
+        assert_eq!(parser.parse(device_event(0, 1)), None);
+        assert_eq!(parser.parse(device_event(178, 0)), None);
         // The incomplete gesture was reset, so this is a new ignored marker.
-        assert_eq!(parser.parse(RawDeviceInput::new(0, 2)), None);
-        assert_eq!(parser.parse(RawDeviceInput::new(42, 99)), None);
+        assert_eq!(parser.parse(device_event(0, 2)), None);
         assert_eq!(
             DeviceEvent::try_from(RawDeviceInput::new(42, 99)),
             Err(RawDeviceInput::new(42, 99))
         );
+    }
+
+    fn device_event(control: u8, state: u8) -> DeviceEvent {
+        DeviceEvent::try_from(RawDeviceInput::new(control, state)).unwrap()
     }
 }
