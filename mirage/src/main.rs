@@ -109,14 +109,16 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
                     device.flush().await?;
                 }
             }
-            event = device.read_event() => {
-                if let Some(EnrichedDeviceEvent::Button { button, pressed }) = event? {
-                    let widget_event = if pressed {
-                        WidgetEvent::Pressed
-                    } else {
-                        WidgetEvent::Released
-                    };
-                    widgets.handle_event(button, widget_event);
+            events = device.read_event() => {
+                for event in events? {
+                    if let EnrichedDeviceEvent::Button { button, pressed } = event {
+                        let widget_event = if pressed {
+                            WidgetEvent::Pressed
+                        } else {
+                            WidgetEvent::Released
+                        };
+                        widgets.handle_event(button, widget_event);
+                    }
                 }
             }
         }

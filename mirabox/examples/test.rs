@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match DeviceEvent::try_from(raw_input) {
                         Ok(event) => {
                             println!("event: {event:?}");
-                            if let Some(event) = event_parser.parse(event) {
+                            for event in event_parser.parse(event) {
                                 println!("\x1b[1menriched: {event:?}\x1b[0m");
                             }
                         }

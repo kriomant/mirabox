@@ -4,6 +4,7 @@ mod event;
 
 use std::sync::{Arc, Mutex};
 
+use arrayvec::ArrayVec;
 use image::DynamicImage;
 use mirajazz::{
     device::{Device, DeviceQuery, list_devices},
@@ -122,15 +123,19 @@ impl MiraboxN4Pro {
 
     /// Waits for the next device input report and decodes it with inferred state.
     ///
-    /// `None` denotes a transport report that did not contain input data or did
-    /// not result in an enriched event.
-    pub async fn read_event(&self) -> Result<Option<EnrichedDeviceEvent>, MirajazzError> {
+    /// Returns zero, one, or two enriched events for the next input report.
+    ///
+    /// A short touch generates both a synthesized `Touch` and `TouchReleased`
+    /// event. Reports without input or a recognized event return an empty list.
+    pub async fn read_event(
+        &self,
+    ) -> Result<ArrayVec<EnrichedDeviceEvent, 2>, MirajazzError> {
         let Some(raw) = self.read_raw_input().await? else {
-            return Ok(None);
+            return Ok(ArrayVec::new());
         };
 
         let Ok(event) = DeviceEvent::try_from(raw) else {
-            return Ok(None);
+            return Ok(ArrayVec::new());
         };
 
         Ok(self
