@@ -34,22 +34,23 @@ active.
 
 | Raw report | Decoded event | Meaning |
 | --- | --- | --- |
-| `(0, 0..=3)` | `Touch { virtual_button }` | Periodic touch sample, roughly 20 Hz |
+| `(0, 0..=3)` | `Touch { touchbar_region }` | Periodic touch sample, roughly 20 Hz |
 | `(64..=67, 0)` | `TouchReleased { virtual_button: control - 64 }` | Release on virtual buttons 0 through 3 |
 | `(56, 0)` | `DeviceEvent::Swipe { Right }` | Swipe right |
 | `(57, 0)` | `DeviceEvent::Swipe { Left }` | Swipe left |
 | `(177, 0)` | `DeviceEvent::Swipe { Up }` | Swipe up |
 | `(178, 0)` | `DeviceEvent::Swipe { Down }` | Swipe down |
 
-The first `(0, state)` report of a touch always has `state = 1`, regardless of
-which virtual button was initially touched. `EventParser` suppresses that
-marker. It uses the remaining touch samples to emit
-`EnrichedDeviceEvent::HorizontalSwipe { start_virtual_button,
-end_virtual_button, .. }`. Vertical gestures produce
-`EnrichedDeviceEvent::VerticalSwipe { virtual_button, .. }` with just their
-source button. A swipe without the required touch samples, along with unknown
-raw reports, is dropped. `MiraboxN4Pro::read_event` returns these enriched
-events; `DeviceEvent` remains the stateless raw-report decoding API.
+`Touch { touchbar_region }` is a device quirk: its value identifies a touch-bar
+region, **not** a virtual button. The regions do not map regularly to virtual
+buttons, so `EventParser` ignores all touch samples. Swipe reports are preserved
+as `EnrichedDeviceEvent::Swipe { direction }`; no virtual-button position is
+available for them. In contrast, `TouchReleased { virtual_button }` does contain
+the zero-based virtual-button index. `EventParser` converts it into one
+`EnrichedDeviceEvent::Touch { button }` press event.
+
+`MiraboxN4Pro::read_event` returns these enriched events; `DeviceEvent` remains
+the stateless raw-report decoding API. Unknown raw reports are dropped.
 
 Touch input is suppressed while a physical button is pressed. In the opposite
 direction, physical button events continue to report while a touch is active.
@@ -63,8 +64,7 @@ lossless two-byte carrier. `RawDeviceInput::try_from` reverses it immediately
 by casting both values to `u8`, preserving values such as controls 160--178.
 
 This carrier is not a native encoder event and must be decoded before the
-resulting `DeviceInput` is used for application behavior. Unknown reports are
-preserved as `DeviceEvent::Unknown { control, state }` and logged.
+resulting `DeviceInput` is used for application behavior. Unknown reports are dropped by `MiraboxN4Pro::read_event`.
 
 ## Simultaneous-input behavior
 

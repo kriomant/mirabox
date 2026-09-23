@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Uploaded test images to 14 button displays (10 physical, 4 virtual).");
     println!("Listening for raw and enriched events; press Control-C to exit.");
 
-    let mut event_parser = EventParser::new();
+    let event_parser = EventParser::new();
     let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
     keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     match DeviceEvent::try_from(raw_input) {
                         Ok(event) => {
                             println!("event: {event:?}");
-                            for event in event_parser.parse(event) {
+                            if let Some(event) = event_parser.parse(event) {
                                 println!("\x1b[1menriched: {event:?}\x1b[0m");
                             }
                         }

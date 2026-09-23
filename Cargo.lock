@@ -610,7 +610,6 @@ dependencies = [
 name = "mirabox"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "image",
  "mirajazz",
  "tokio",

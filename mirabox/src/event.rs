@@ -1,4 +1,4 @@
-use arrayvec::ArrayVec;
+
 use mirajazz::types::DeviceInput;
 
 /// A lossless transport representation for MiraBox's two-byte input reports.
@@ -49,17 +49,6 @@ pub enum SwipeDirection {
     Down,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HorizontalDirection {
-    Right,
-    Left,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VerticalDirection {
-    Up,
-    Down,
-}
 
 /// A semantically decoded MiraBox N4 Pro input event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,9 +64,12 @@ pub enum DeviceEvent {
         knob: u8,
         direction: KnobDirection,
     },
-    /// A touch sample reports virtual-button index 0 through 3.
+    /// A touch sample reports a touch-bar region index, not a virtual-button index.
+    ///
+    /// Touch-bar regions do not align regularly with virtual buttons, so this value
+    /// must not be used to identify the touched virtual button.
     Touch {
-        virtual_button: u8,
+        touchbar_region: u8,
     },
     /// Touch release reports zero-based virtual-button index 0 through 3.
     TouchReleased {
@@ -88,7 +80,7 @@ pub enum DeviceEvent {
     },
 }
 
-/// A decoded event with state inferred from preceding input reports.
+/// A decoded event enriched with its application-level meaning.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnrichedDeviceEvent {
     Button {
@@ -102,123 +94,49 @@ pub enum EnrichedDeviceEvent {
         knob: u8,
         direction: KnobDirection,
     },
+    /// A press on a virtual button.
+    ///
+    /// This event is emitted for `DeviceEvent::TouchReleased`, because release
+    /// reports—not touch samples—contain the virtual-button index.
     Touch {
         button: u8,
     },
-    TouchReleased {
-        button: u8,
-    },
-    /// A swipe between horizontally adjacent virtual buttons.
-    HorizontalSwipe {
-        start_button: u8,
-        end_button: u8,
-        direction: HorizontalDirection,
-    },
-    /// A vertical swipe on a virtual button.
-    VerticalSwipe {
-        virtual_button: u8,
-        direction: VerticalDirection,
+    /// A touch-screen swipe direction without virtual-button position data.
+    Swipe {
+        direction: SwipeDirection,
     },
 }
 
-#[derive(Debug, Default)]
-enum Touch {
-    #[default]
-    None,
-    Pending,
-    Active {
-        start_button: u8,
-        end_button: u8,
-    },
-}
-
-/// Decodes input reports while retaining touch-gesture state.
+/// Enriches input reports whose raw representation differs from their meaning.
 ///
-/// The device's first touch report always has `state = 1`, regardless of the
-/// touched button, so it is suppressed. Subsequent samples define a gesture's
-/// start and end buttons for swipe events.
+/// Touch samples are ignored because their values identify irregular touch-bar
+/// regions rather than virtual buttons. A touch-release report identifies the
+/// virtual button and is converted to `EnrichedDeviceEvent::Touch`.
 #[derive(Debug, Default)]
-pub struct EventParser {
-    active_touch: Touch,
-}
+pub struct EventParser;
 
 impl EventParser {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
-    pub fn parse(&mut self, event: DeviceEvent) -> ArrayVec<EnrichedDeviceEvent, 2> {
-        let mut events = ArrayVec::new();
-
+    pub fn parse(&self, event: DeviceEvent) -> Option<EnrichedDeviceEvent> {
         match event {
-            DeviceEvent::Touch { virtual_button } => match self.active_touch {
-                // First touch event doesn't have button information, skip it.
-                Touch::None => self.active_touch = Touch::Pending,
-                Touch::Pending => {
-                    self.active_touch = Touch::Active {
-                        start_button: virtual_button,
-                        end_button: virtual_button,
-                    };
-                    events.push(EnrichedDeviceEvent::Touch {
-                        button: virtual_button,
-                    });
-                }
-                Touch::Active { ref mut end_button, .. } => {
-                    *end_button = virtual_button;
-                }
-            },
+            DeviceEvent::Touch { .. } => None,
             DeviceEvent::TouchReleased { virtual_button } => {
-                if !matches!(self.active_touch, Touch::Active { .. }) {
-                    events.push(EnrichedDeviceEvent::Touch {
-                        button: virtual_button,
-                    });
-                }
-                self.active_touch = Touch::None;
-                events.push(EnrichedDeviceEvent::TouchReleased {
+                Some(EnrichedDeviceEvent::Touch {
                     button: virtual_button,
-                });
-            }
-            DeviceEvent::Swipe { direction } => {
-                if let Touch::Active {
-                    start_button,
-                    end_button,
-                } = std::mem::take(&mut self.active_touch)
-                {
-                    let event = match direction {
-                        SwipeDirection::Left => EnrichedDeviceEvent::HorizontalSwipe {
-                            start_button,
-                            end_button,
-                            direction: HorizontalDirection::Left,
-                        },
-                        SwipeDirection::Right => EnrichedDeviceEvent::HorizontalSwipe {
-                            start_button,
-                            end_button,
-                            direction: HorizontalDirection::Right,
-                        },
-                        SwipeDirection::Up => EnrichedDeviceEvent::VerticalSwipe {
-                            virtual_button: start_button,
-                            direction: VerticalDirection::Up,
-                        },
-                        SwipeDirection::Down => EnrichedDeviceEvent::VerticalSwipe {
-                            virtual_button: start_button,
-                            direction: VerticalDirection::Down,
-                        },
-                    };
-                    events.push(event);
-                }
+                })
             }
             DeviceEvent::Button { button, pressed } => {
-                events.push(EnrichedDeviceEvent::Button { button, pressed });
+                Some(EnrichedDeviceEvent::Button { button, pressed })
             }
-            DeviceEvent::KnobPressed { knob } => {
-                events.push(EnrichedDeviceEvent::KnobPressed { knob });
-            }
+            DeviceEvent::KnobPressed { knob } => Some(EnrichedDeviceEvent::KnobPressed { knob }),
             DeviceEvent::KnobRotated { knob, direction } => {
-                events.push(EnrichedDeviceEvent::KnobRotated { knob, direction });
+                Some(EnrichedDeviceEvent::KnobRotated { knob, direction })
             }
+            DeviceEvent::Swipe { direction } => Some(EnrichedDeviceEvent::Swipe { direction }),
         }
-
-        events
     }
 }
 
@@ -272,7 +190,7 @@ impl TryFrom<RawDeviceInput> for DeviceEvent {
                 direction: KnobDirection::Clockwise,
             },
             (0, 0..=3) => Self::Touch {
-                virtual_button: raw.state,
+                touchbar_region: raw.state,
             },
             (64..=67, 0) => Self::TouchReleased {
                 virtual_button: raw.control - 64,
@@ -343,55 +261,23 @@ mod tests {
     }
 
     #[test]
-    fn associates_horizontal_swipes_with_start_and_end_virtual_buttons() {
-        let mut parser = EventParser::new();
+    fn ignores_touch_samples_and_preserves_swipe_directions() {
+        let parser = EventParser::new();
 
-        // The first report starts contact but its state is not a button index.
-        assert!(parser.parse(device_event(0, 1)).is_empty());
+        assert_eq!(parser.parse(device_event(0, 1)), None);
+        assert_eq!(parser.parse(device_event(0, 2)), None);
         assert_eq!(
-            parser.parse(device_event(0, 2)).as_slice(),
-            &[EnrichedDeviceEvent::Touch { button: 2 }]
+            parser.parse(device_event(57, 0)),
+            Some(EnrichedDeviceEvent::Swipe {
+                direction: SwipeDirection::Left,
+            })
         );
         assert_eq!(
-            parser.parse(device_event(0, 3)).as_slice(),
-            &[EnrichedDeviceEvent::Touch { button: 3 }]
+            parser.parse(device_event(177, 0)),
+            Some(EnrichedDeviceEvent::Swipe {
+                direction: SwipeDirection::Up,
+            })
         );
-        assert_eq!(
-            parser.parse(device_event(57, 0)).as_slice(),
-            &[EnrichedDeviceEvent::HorizontalSwipe {
-                start_button: 2,
-                end_button: 3,
-                direction: HorizontalDirection::Left,
-            }]
-        );
-    }
-
-    #[test]
-    fn associates_vertical_swipes_with_the_source_virtual_button() {
-        let mut parser = EventParser::new();
-
-        assert!(parser.parse(device_event(0, 1)).is_empty());
-        assert_eq!(
-            parser.parse(device_event(0, 2)).as_slice(),
-            &[EnrichedDeviceEvent::Touch { button: 2 }]
-        );
-        assert_eq!(
-            parser.parse(device_event(177, 0)).as_slice(),
-            &[EnrichedDeviceEvent::VerticalSwipe {
-                virtual_button: 2,
-                direction: VerticalDirection::Up,
-            }]
-        );
-    }
-
-    #[test]
-    fn drops_swipes_without_touch_state_and_unknown_reports() {
-        let mut parser = EventParser::new();
-
-        assert!(parser.parse(device_event(0, 1)).is_empty());
-        assert!(parser.parse(device_event(178, 0)).is_empty());
-        // The incomplete gesture was reset, so this is a new ignored marker.
-        assert!(parser.parse(device_event(0, 2)).is_empty());
         assert_eq!(
             DeviceEvent::try_from(RawDeviceInput::new(42, 99)),
             Err(RawDeviceInput::new(42, 99))
@@ -399,16 +285,13 @@ mod tests {
     }
 
     #[test]
-    fn synthesises_touch_before_release_for_a_short_touch() {
-        let mut parser = EventParser::new();
+    fn converts_touch_release_to_virtual_button_press() {
+        let parser = EventParser::new();
 
-        assert!(parser.parse(device_event(0, 1)).is_empty());
+        assert_eq!(parser.parse(device_event(0, 1)), None);
         assert_eq!(
-            parser.parse(device_event(66, 0)).as_slice(),
-            &[
-                EnrichedDeviceEvent::Touch { button: 2 },
-                EnrichedDeviceEvent::TouchReleased { button: 2 },
-            ]
+            parser.parse(device_event(66, 0)),
+            Some(EnrichedDeviceEvent::Touch { button: 2 })
         );
     }
 

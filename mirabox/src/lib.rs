@@ -2,9 +2,7 @@
 
 mod event;
 
-use std::sync::{Arc, Mutex};
-
-use arrayvec::ArrayVec;
+use std::sync::Arc;
 use image::DynamicImage;
 use mirajazz::{
     device::{Device, DeviceQuery, list_devices},
@@ -14,8 +12,7 @@ use mirajazz::{
 };
 
 pub use event::{
-    DeviceEvent, EnrichedDeviceEvent, EventParser, HorizontalDirection, KnobDirection,
-    RawDeviceInput, SwipeDirection, VerticalDirection,
+    DeviceEvent, EnrichedDeviceEvent, EventParser, KnobDirection, RawDeviceInput, SwipeDirection,
 };
 
 const HID_USAGE_PAGE: u16 = 0xffa0;
@@ -50,7 +47,7 @@ pub const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat {
 pub struct MiraboxN4Pro {
     device: Device,
     reader: Arc<DeviceStateReader>,
-    event_parser: Mutex<EventParser>,
+    event_parser: EventParser,
 }
 
 impl MiraboxN4Pro {
@@ -78,7 +75,7 @@ impl MiraboxN4Pro {
         Ok(Some(Self {
             device,
             reader,
-            event_parser: Mutex::new(EventParser::new()),
+            event_parser: EventParser::new(),
         }))
     }
 
@@ -123,26 +120,22 @@ impl MiraboxN4Pro {
 
     /// Waits for the next device input report and decodes it with inferred state.
     ///
-    /// Returns zero, one, or two enriched events for the next input report.
+    /// Returns an enriched event for the next input report, if there is one.
     ///
-    /// A short touch generates both a synthesized `Touch` and `TouchReleased`
-    /// event. Reports without input or a recognized event return an empty list.
-    pub async fn read_event(
-        &self,
-    ) -> Result<ArrayVec<EnrichedDeviceEvent, 2>, MirajazzError> {
+    /// Touch samples are ignored because their values identify touch-bar regions,
+    /// not virtual buttons. A touch-release report produces an enriched `Touch`
+    /// press event using its virtual-button index. Swipes are returned with only
+    /// their direction. Reports without input or a recognized event return `None`.
+    pub async fn read_event(&self) -> Result<Option<EnrichedDeviceEvent>, MirajazzError> {
         let Some(raw) = self.read_raw_input().await? else {
-            return Ok(ArrayVec::new());
+            return Ok(None);
         };
 
         let Ok(event) = DeviceEvent::try_from(raw) else {
-            return Ok(ArrayVec::new());
+            return Ok(None);
         };
 
-        Ok(self
-            .event_parser
-            .lock()
-            .expect("event parser mutex is only held while parsing a report")
-            .parse(event))
+        Ok(self.event_parser.parse(event))
     }
 
     /// Returns the device serial number.
