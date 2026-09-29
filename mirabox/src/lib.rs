@@ -71,10 +71,10 @@ const N4_PRO_PHYSICAL_BUTTON_IMAGE_KEYS: [u8; N4_PRO_BUTTON_COUNT] =
     [10, 11, 12, 13, 14, 5, 6, 7, 8, 9];
 
 /// Image format for a physical button display.
-pub const PHYSICAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat { size: (128, 128) };
+pub const PHYSICAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat { size: (112, 112) };
 
 /// Image format for a touch-screen virtual button display.
-pub const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat { size: (203, 128) };
+pub const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat { size: (176, 112) };
 
 /// A connected MiraBox N4 Pro.
 pub struct MiraboxN4Pro {
@@ -190,6 +190,12 @@ fn encode_image(format: ImageFormat, image: DynamicImage) -> Result<Vec<u8>, Ima
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_image_formats_match_captured_dimensions() {
+        assert_eq!(PHYSICAL_BUTTON_IMAGE_FORMAT.size, (112, 112));
+        assert_eq!(VIRTUAL_BUTTON_IMAGE_FORMAT.size, (176, 112));
+    }
 
     #[test]
     fn encodes_rotated_jpeg_at_requested_size() {
