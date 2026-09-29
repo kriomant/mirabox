@@ -1,58 +1,16 @@
-use std::{collections::HashMap, error::Error, fmt};
-
-use async_hid::{AsyncHidRead, AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend, HidError};
+use async_hid::{AsyncHidRead, AsyncHidWrite, DeviceReader, DeviceWriter, HidBackend};
 use futures_lite::StreamExt;
-use image::{DynamicImage, ImageError, codecs::jpeg::JpegEncoder, imageops::FilterType};
+
 use tokio::sync::Mutex;
 
 use crate::{
-    HID_USAGE_ID, HID_USAGE_PAGE, ImageFormat, MIRABOX_VENDOR_ID, N4_PRO_PRODUCT_ID, RawDeviceInput,
+    DeviceError, HID_USAGE_ID, HID_USAGE_PAGE, MIRABOX_VENDOR_ID, N4_PRO_PRODUCT_ID, RawDeviceInput,
 };
 
 const PACKET_SIZE: usize = 1024;
 const REPORT_SIZE: usize = PACKET_SIZE + 1;
 const COMMAND_PREFIX: &[u8] = b"\0CRT\0\0";
 
-#[derive(Debug)]
-pub enum DeviceError {
-    Hid(HidError),
-    Image(ImageError),
-    DeviceNotFound,
-    MissingSerialNumber,
-}
-
-impl fmt::Display for DeviceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Hid(error) => write!(f, "HID error: {error}"),
-            Self::Image(error) => write!(f, "image error: {error}"),
-            Self::DeviceNotFound => write!(f, "device disappeared during connection"),
-            Self::MissingSerialNumber => write!(f, "device has no serial number"),
-        }
-    }
-}
-
-impl Error for DeviceError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Hid(error) => Some(error),
-            Self::Image(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<HidError> for DeviceError {
-    fn from(error: HidError) -> Self {
-        Self::Hid(error)
-    }
-}
-
-impl From<ImageError> for DeviceError {
-    fn from(error: ImageError) -> Self {
-        Self::Image(error)
-    }
-}
 
 struct Writer {
     device: DeviceWriter,
@@ -62,7 +20,6 @@ struct Writer {
 pub(crate) struct Device {
     reader: Mutex<DeviceReader>,
     writer: Mutex<Writer>,
-    images: Mutex<HashMap<u8, Vec<u8>>>,
     pub serial_number: String,
     pub firmware_version: Option<String>,
 }
@@ -114,33 +71,25 @@ impl Device {
                 device: writer,
                 initialized: false,
             }),
-            images: Mutex::new(HashMap::new()),
             serial_number,
             firmware_version,
         }))
     }
 
-    pub async fn set_image(
-        &self,
-        key: u8,
-        format: ImageFormat,
-        image: DynamicImage,
-    ) -> Result<(), DeviceError> {
-        self.writer.lock().await.initialize().await?;
-        let bytes = tokio::task::block_in_place(move || encode_image(format, image))?;
-        self.images.lock().await.insert(key, bytes);
-        Ok(())
+    pub async fn initialize(&self) -> Result<(), DeviceError> {
+        self.writer.lock().await.initialize().await
     }
 
-    pub async fn flush(&self) -> Result<(), DeviceError> {
-        let mut images = self.images.lock().await;
+    pub async fn write_images<'a>(
+        &self,
+        images: impl IntoIterator<Item = (u8, &'a [u8])>,
+    ) -> Result<(), DeviceError> {
         let mut writer = self.writer.lock().await;
         writer.initialize().await?;
-        if images.is_empty() {
-            return Ok(());
-        }
+        let mut wrote_image = false;
 
-        for (key, bytes) in images.drain() {
+        for (key, bytes) in images {
+            wrote_image = true;
             writer
                 .write_command(&image_header(key, bytes.len()))
                 .await?;
@@ -150,7 +99,9 @@ impl Device {
                 writer.device.write_output_report(&report).await?;
             }
         }
-        writer.write_command(b"STP").await?;
+        if wrote_image {
+            writer.write_command(b"STP").await?;
+        }
         Ok(())
     }
 
@@ -207,22 +158,6 @@ fn parse_input(report: &[u8]) -> Option<RawDeviceInput> {
         return None;
     }
     Some(RawDeviceInput::new(report[9], report[10]))
-}
-
-fn encode_image(format: ImageFormat, image: DynamicImage) -> Result<Vec<u8>, ImageError> {
-    let (width, height) = format.size;
-    let image = image
-        .resize_exact(width as u32, height as u32, FilterType::Lanczos3)
-        .rotate180()
-        .into_rgb8();
-    let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 90).encode(
-        image.as_raw(),
-        width as u32,
-        height as u32,
-        image::ColorType::Rgb8.into(),
-    )?;
-    Ok(bytes)
 }
 
 #[cfg(test)]

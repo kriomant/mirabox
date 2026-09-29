@@ -3,10 +3,53 @@
 mod device;
 mod event;
 
-use device::Device;
-use image::DynamicImage;
+use std::{collections::HashMap, error::Error, fmt};
 
-pub use device::DeviceError;
+use async_hid::HidError;
+use device::Device;
+use image::{DynamicImage, ImageError, codecs::jpeg::JpegEncoder, imageops::FilterType};
+use tokio::sync::Mutex;
+
+#[derive(Debug)]
+pub enum DeviceError {
+    Hid(HidError),
+    Image(ImageError),
+    DeviceNotFound,
+    MissingSerialNumber,
+}
+
+impl fmt::Display for DeviceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Hid(error) => write!(f, "HID error: {error}"),
+            Self::Image(error) => write!(f, "image error: {error}"),
+            Self::DeviceNotFound => write!(f, "device disappeared during connection"),
+            Self::MissingSerialNumber => write!(f, "device has no serial number"),
+        }
+    }
+}
+
+impl Error for DeviceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Hid(error) => Some(error),
+            Self::Image(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<HidError> for DeviceError {
+    fn from(error: HidError) -> Self {
+        Self::Hid(error)
+    }
+}
+
+impl From<ImageError> for DeviceError {
+    fn from(error: ImageError) -> Self {
+        Self::Image(error)
+    }
+}
 
 /// JPEG image size for an N4 Pro display. Images are rotated 180° before upload.
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +79,7 @@ pub const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat { size: (203, 1
 /// A connected MiraBox N4 Pro.
 pub struct MiraboxN4Pro {
     device: Device,
+    images: Mutex<HashMap<u8, Vec<u8>>>,
     event_parser: EventParser,
 }
 
@@ -44,6 +88,7 @@ impl MiraboxN4Pro {
     pub async fn connect() -> Result<Option<Self>, DeviceError> {
         Ok(Device::connect().await?.map(|device| Self {
             device,
+            images: Mutex::new(HashMap::new()),
             event_parser: EventParser::new(),
         }))
     }
@@ -66,12 +111,21 @@ impl MiraboxN4Pro {
         format: ImageFormat,
         image: DynamicImage,
     ) -> Result<(), DeviceError> {
-        self.device.set_image(key, format, image).await
+        self.device.initialize().await?;
+        let bytes = tokio::task::block_in_place(move || encode_image(format, image))?;
+        self.images.lock().await.insert(key, bytes);
+        Ok(())
     }
 
     /// Commits queued images to the device.
     pub async fn flush(&self) -> Result<(), DeviceError> {
-        self.device.flush().await
+        let mut images = self.images.lock().await;
+        // Retain the entire batch for retry if any write or the commit fails.
+        self.device
+            .write_images(images.iter().map(|(&key, bytes)| (key, bytes.as_slice())))
+            .await?;
+        images.clear();
+        Ok(())
     }
 
     /// Sends a keep-alive message to the device.
@@ -114,5 +168,40 @@ impl MiraboxN4Pro {
     /// Returns the device firmware version, when reported by the device.
     pub fn firmware_version(&self) -> Option<&str> {
         self.device.firmware_version.as_deref()
+    }
+}
+
+fn encode_image(format: ImageFormat, image: DynamicImage) -> Result<Vec<u8>, ImageError> {
+    let (width, height) = format.size;
+    let image = image
+        .resize_exact(width as u32, height as u32, FilterType::Lanczos3)
+        .rotate180()
+        .into_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 90).encode(
+        image.as_raw(),
+        width as u32,
+        height as u32,
+        image::ColorType::Rgb8.into(),
+    )?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_rotated_jpeg_at_requested_size() {
+        let mut image = image::RgbImage::new(2, 1);
+        image.put_pixel(0, 0, image::Rgb([255, 0, 0]));
+        image.put_pixel(1, 0, image::Rgb([0, 0, 255]));
+
+        let bytes = encode_image(ImageFormat { size: (2, 1) }, DynamicImage::ImageRgb8(image))
+            .unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().into_rgb8();
+        assert_eq!(decoded.dimensions(), (2, 1));
+        assert!(decoded.get_pixel(0, 0)[2] > decoded.get_pixel(0, 0)[0]);
+        assert!(decoded.get_pixel(1, 0)[0] > decoded.get_pixel(1, 0)[2]);
     }
 }
