@@ -55,16 +55,12 @@ the stateless raw-report decoding API. Unknown raw reports are dropped.
 Touch input is suppressed while a physical button is pressed. In the opposite
 direction, physical button events continue to report while a touch is active.
 
-## `DeviceInput` transport encoding
+## Input transport
 
-`mirajazz::types::DeviceInput` cannot represent arbitrary raw `(control,
-state)` pairs. `RawDeviceInput::into_device_input` therefore uses
-`DeviceInput::EncoderTwist(vec![control as i8, state as i8])` as an internal,
-lossless two-byte carrier. `RawDeviceInput::try_from` reverses it immediately
-by casting both values to `u8`, preserving values such as controls 160--178.
-
-This carrier is not a native encoder event and must be decoded before the
-resulting `DeviceInput` is used for application behavior. Unknown reports are dropped by `MiraboxN4Pro::read_event`.
+`MiraboxN4Pro::read_raw_input` reads the control and state bytes directly from
+ACK reports, preserving values such as controls 160--178. Reports without an ACK
+prefix or both input bytes return `None`. Unknown inputs are dropped by
+`MiraboxN4Pro::read_event`.
 
 ## Simultaneous-input behavior
 

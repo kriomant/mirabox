@@ -6,8 +6,7 @@ publish.workspace = true
 
 [dependencies]
 
+async-hid.workspace = true
+futures-lite.workspace = true
 image.workspace = true
-mirajazz.workspace = true
-
-[dev-dependencies]
 tokio.workspace = true

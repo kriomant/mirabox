@@ -610,8 +610,9 @@ dependencies = [
 name = "mirabox"
 version = "0.1.0"
 dependencies = [
+ "async-hid",
+ "futures-lite",
  "image",
- "mirajazz",
  "tokio",
 ]
 
@@ -621,18 +622,6 @@ version = "0.1.0"
 dependencies = [
  "image",
  "mirabox",
- "tokio",
-]
-
-[[package]]
-name = "mirajazz"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e367c789606caab2cfb292879ff5a3688d8917cdf0e0a01d4e8fcbbb0cdf5eb4"
-dependencies = [
- "async-hid",
- "futures-lite",
- "image",
  "tokio",
 ]
 

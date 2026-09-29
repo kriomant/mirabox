@@ -1,11 +1,4 @@
-
-use mirajazz::types::DeviceInput;
-
-/// A lossless transport representation for MiraBox's two-byte input reports.
-///
-/// `DeviceInput` has no generic raw-report variant. `EncoderTwist` is used only
-/// as a carrier: its two signed bytes store `control` and `state` respectively.
-/// Casting them back to `u8` restores the original bytes exactly.
+/// A MiraBox two-byte input report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RawDeviceInput {
     pub control: u8,
@@ -15,23 +8,6 @@ pub struct RawDeviceInput {
 impl RawDeviceInput {
     pub const fn new(control: u8, state: u8) -> Self {
         Self { control, state }
-    }
-
-    pub fn into_device_input(self) -> DeviceInput {
-        DeviceInput::EncoderTwist(vec![self.control as i8, self.state as i8])
-    }
-}
-
-impl TryFrom<DeviceInput> for RawDeviceInput {
-    type Error = DeviceInput;
-
-    fn try_from(input: DeviceInput) -> Result<Self, Self::Error> {
-        match input {
-            DeviceInput::EncoderTwist(values) if values.len() == 2 => {
-                Ok(Self::new(values[0] as u8, values[1] as u8))
-            }
-            input => Err(input),
-        }
     }
 }
 
@@ -48,7 +24,6 @@ pub enum SwipeDirection {
     Up,
     Down,
 }
-
 
 /// A semantically decoded MiraBox N4 Pro input event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,11 +98,9 @@ impl EventParser {
     pub fn parse(&self, event: DeviceEvent) -> Option<EnrichedDeviceEvent> {
         match event {
             DeviceEvent::Touch { .. } => None,
-            DeviceEvent::TouchReleased { virtual_button } => {
-                Some(EnrichedDeviceEvent::Touch {
-                    button: virtual_button,
-                })
-            }
+            DeviceEvent::TouchReleased { virtual_button } => Some(EnrichedDeviceEvent::Touch {
+                button: virtual_button,
+            }),
             DeviceEvent::Button { button, pressed } => {
                 Some(EnrichedDeviceEvent::Button { button, pressed })
             }
@@ -217,14 +190,6 @@ impl TryFrom<RawDeviceInput> for DeviceEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn raw_input_round_trips_through_device_input() {
-        let raw = RawDeviceInput::new(177, 255);
-        let decoded = RawDeviceInput::try_from(raw.into_device_input()).unwrap();
-
-        assert_eq!(decoded, raw);
-    }
 
     #[test]
     fn decodes_known_events() {
