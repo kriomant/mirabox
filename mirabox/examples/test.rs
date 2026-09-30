@@ -40,6 +40,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut screen_brightness = MAX_SCREEN_BRIGHTNESS / 2;
     device.set_light_brightness(light_brightness).await?;
     device.set_screen_brightness(screen_brightness).await?;
+    let mut vibro_feedback_enabled = true;
+    device.set_vibro_feedback(vibro_feedback_enabled).await?;
+    println!("Button 1: toggle vibro feedback (initially enabled).");
     println!("Knob 1: backlight brightness (0–60), currently {light_brightness}");
     println!("Knob 2: screen brightness (0–100), currently {screen_brightness}");
     println!("Clockwise increases; counterclockwise decreases.");
@@ -86,6 +89,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 println!("\x1b[m");
                 match event {
+                    Some(DeviceEvent::Button { button: 0, pressed: true }) => {
+                        let next = !vibro_feedback_enabled;
+                        device.set_vibro_feedback(next).await?;
+                        vibro_feedback_enabled = next;
+                        println!("Vibro feedback: {}", if next { "enabled" } else { "disabled" });
+                    }
                     Some(DeviceEvent::KnobRotated { knob: 0, direction }) => {
                         let next = adjust_brightness(
                             light_brightness, direction, MAX_LIGHT_BRIGHTNESS

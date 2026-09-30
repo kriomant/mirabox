@@ -8,6 +8,7 @@ use crate::{DeviceError, HID_USAGE_ID, HID_USAGE_PAGE, MIRABOX_VENDOR_ID, N4_PRO
 const PACKET_SIZE: usize = 1024;
 const REPORT_SIZE: usize = PACKET_SIZE + 1;
 const COMMAND_PREFIX: &[u8] = b"\0CRT\0\0";
+const VIBRO_FEEDBACK_COMMAND: [u8; 11] = *b"QUCMD\x1f\x11\0\x11\0\x11";
 
 struct Writer {
     device: DeviceWriter,
@@ -118,6 +119,12 @@ impl Device {
             .await
     }
 
+    pub async fn set_vibro_feedback(&self, enabled: bool) -> Result<(), DeviceError> {
+        let mut writer = self.writer.lock().await;
+        writer.initialize().await?;
+        writer.write_command(&vibro_feedback_command(enabled)).await
+    }
+
     pub async fn keep_alive(&self) -> Result<(), DeviceError> {
         let mut writer = self.writer.lock().await;
         writer.initialize().await?;
@@ -169,6 +176,12 @@ fn brightness_command(name: &[u8; 5], brightness: u8) -> [u8; 6] {
     command
 }
 
+fn vibro_feedback_command(enabled: bool) -> [u8; 11] {
+    let mut command = VIBRO_FEEDBACK_COMMAND;
+    command[8] = if enabled { 0x11 } else { 0xff };
+    command
+}
+
 fn image_header(key: u8, length: usize) -> [u8; 8] {
     let [high, low] = (length as u16).to_be_bytes();
     [b'B', b'A', b'T', 0, 0, high, low, key + 1]
@@ -215,6 +228,19 @@ mod tests {
         let lights_off = command_report(&brightness_command(b"LBLIG", 0));
         assert_eq!(screen_off[11], 0);
         assert_eq!(lights_off[11], 0);
+    }
+
+    #[test]
+    fn frames_vibro_feedback_toggle() {
+        for (enabled, expected) in [
+            (true, b"\0CRT\0\0QUCMD\x1f\x11\0\x11\0\x11".as_slice()),
+            (false, b"\0CRT\0\0QUCMD\x1f\x11\0\xff\0\x11".as_slice()),
+        ] {
+            let report = command_report(&vibro_feedback_command(enabled));
+            assert_eq!(&report[..17], expected);
+            assert!(report[17..].iter().all(|byte| *byte == 0));
+            assert_eq!(report.len(), REPORT_SIZE);
+        }
     }
 
     #[test]

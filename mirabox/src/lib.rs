@@ -148,6 +148,15 @@ impl MiraboxN4Pro {
         self.device.set_light_brightness(brightness).await
     }
 
+    /// Enables or disables the device's vibro feedback.
+    ///
+    /// Uses a captured `QUCMD` template with “Follow the software” lighting mode;
+    /// setting feedback also selects that mode. This command has not been
+    /// independently replay-verified on hardware.
+    pub async fn set_vibro_feedback(&self, enabled: bool) -> Result<(), DeviceError> {
+        self.device.set_vibro_feedback(enabled).await
+    }
+
     /// Sends a keep-alive message to the device.
     pub async fn keep_alive(&self) -> Result<(), DeviceError> {
         self.device.keep_alive().await
