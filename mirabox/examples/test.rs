@@ -1,9 +1,15 @@
 use std::{error::Error, time::Duration};
 
 use image::{DynamicImage, ImageBuffer, Rgb};
-use mirabox::{MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT, VIRTUAL_BUTTON_IMAGE_FORMAT};
+use mirabox::{
+    DeviceEvent, KnobDirection, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT,
+    VIRTUAL_BUTTON_IMAGE_FORMAT,
+};
 
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
+const BRIGHTNESS_STEP: u8 = 5;
+const MAX_LIGHT_BRIGHTNESS: u8 = 60;
+const MAX_SCREEN_BRIGHTNESS: u8 = 100;
 const DIGIT_GLYPHS: [[&str; 5]; 10] = [
     ["111", "1 1", "1 1", "1 1", "111"],
     [" 1 ", "11 ", " 1 ", " 1 ", "111"],
@@ -29,6 +35,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Communication succeeded: serial {}, firmware {firmware}",
         device.serial_number()
     );
+
+    let mut light_brightness = MAX_LIGHT_BRIGHTNESS / 2;
+    let mut screen_brightness = MAX_SCREEN_BRIGHTNESS / 2;
+    device.set_light_brightness(light_brightness).await?;
+    device.set_screen_brightness(screen_brightness).await?;
+    println!("Knob 1: backlight brightness (0–60), currently {light_brightness}");
+    println!("Knob 2: screen brightness (0–100), currently {screen_brightness}");
+    println!("Clockwise increases; counterclockwise decreases.");
+    println!("Each detent changes brightness by {BRIGHTNESS_STEP}.");
 
     for virtual_button in 0..4 {
         device
@@ -70,8 +85,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     print!(" {:02x?}", byte);
                 }
                 println!("\x1b[m");
+                match event {
+                    Some(DeviceEvent::KnobRotated { knob: 0, direction }) => {
+                        let next = adjust_brightness(
+                            light_brightness, direction, MAX_LIGHT_BRIGHTNESS
+                        );
+                        if next != light_brightness {
+                            device.set_light_brightness(next).await?;
+                            light_brightness = next;
+                            println!("Backlight brightness: {light_brightness}/{MAX_LIGHT_BRIGHTNESS}");
+                        }
+                    }
+                    Some(DeviceEvent::KnobRotated { knob: 1, direction }) => {
+                        let next = adjust_brightness(
+                            screen_brightness, direction, MAX_SCREEN_BRIGHTNESS
+                        );
+                        if next != screen_brightness {
+                            device.set_screen_brightness(next).await?;
+                            screen_brightness = next;
+                            println!("Screen brightness: {screen_brightness}/{MAX_SCREEN_BRIGHTNESS}");
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
+    }
+}
+
+fn adjust_brightness(value: u8, direction: KnobDirection, max: u8) -> u8 {
+    match direction {
+        KnobDirection::Clockwise => value.saturating_add(BRIGHTNESS_STEP).min(max),
+        KnobDirection::CounterClockwise => value.saturating_sub(BRIGHTNESS_STEP),
     }
 }
 
@@ -105,7 +150,22 @@ fn test_image(key: u8, (width, height): (usize, usize)) -> DynamicImage {
 
 #[cfg(test)]
 mod tests {
-    use super::visible_report;
+    use super::{BRIGHTNESS_STEP, adjust_brightness, visible_report};
+    use mirabox::KnobDirection;
+
+    #[test]
+    fn brightness_steps_clamp_to_each_range() {
+        for max in [60, 100] {
+            assert_eq!(adjust_brightness(max - 2, KnobDirection::Clockwise, max), max);
+            assert_eq!(adjust_brightness(max, KnobDirection::Clockwise, max), max);
+            assert_eq!(adjust_brightness(2, KnobDirection::CounterClockwise, max), 0);
+            assert_eq!(adjust_brightness(0, KnobDirection::CounterClockwise, max), 0);
+            assert_eq!(
+                adjust_brightness(max / 2, KnobDirection::Clockwise, max),
+                max / 2 + BRIGHTNESS_STEP
+            );
+        }
+    }
 
     #[test]
     fn raw_display_keeps_header_and_nonzero_unknown_fields() {

@@ -16,6 +16,7 @@ pub enum DeviceError {
     Image(ImageError),
     DeviceNotFound,
     MissingSerialNumber,
+    InvalidBrightness { value: u8, max: u8 },
     ShortInputReport { expected: usize, actual: usize },
 }
 
@@ -26,6 +27,9 @@ impl fmt::Display for DeviceError {
             Self::Image(error) => write!(f, "image error: {error}"),
             Self::DeviceNotFound => write!(f, "device disappeared during connection"),
             Self::MissingSerialNumber => write!(f, "device has no serial number"),
+            Self::InvalidBrightness { value, max } => {
+                write!(f, "brightness {value} exceeds the observed maximum of {max}")
+            },
             Self::ShortInputReport { expected, actual } => {
                 write!(f, "short input report: expected at least {expected} bytes, got {actual}")
             }
@@ -130,6 +134,20 @@ impl MiraboxN4Pro {
         Ok(())
     }
 
+    /// Sets screen brightness on the captured 0–100 scale.
+    /// Values outside this observed UI range are not sent to the device.
+    pub async fn set_screen_brightness(&self, brightness: u8) -> Result<(), DeviceError> {
+        validate_brightness(brightness, 100)?;
+        self.device.set_screen_brightness(brightness).await
+    }
+
+    /// Sets dial/light brightness on the captured 0–60 scale.
+    /// Values outside this observed UI range are not sent to the device.
+    pub async fn set_light_brightness(&self, brightness: u8) -> Result<(), DeviceError> {
+        validate_brightness(brightness, 60)?;
+        self.device.set_light_brightness(brightness).await
+    }
+
     /// Sends a keep-alive message to the device.
     pub async fn keep_alive(&self) -> Result<(), DeviceError> {
         self.device.keep_alive().await
@@ -171,6 +189,14 @@ impl MiraboxN4Pro {
     }
 }
 
+fn validate_brightness(value: u8, max: u8) -> Result<(), DeviceError> {
+    if value > max {
+        Err(DeviceError::InvalidBrightness { value, max })
+    } else {
+        Ok(())
+    }
+}
+
 fn encode_image(format: ImageFormat, image: DynamicImage) -> Result<Vec<u8>, ImageError> {
     let (width, height) = format.size;
     let image = image
@@ -190,6 +216,19 @@ fn encode_image(format: ImageFormat, image: DynamicImage) -> Result<Vec<u8>, Ima
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brightness_stays_within_observed_ranges() {
+        for max in [60, 100] {
+            assert!(validate_brightness(0, max).is_ok());
+            assert!(validate_brightness(max, max).is_ok());
+            assert!(matches!(
+                validate_brightness(max + 1, max),
+                Err(DeviceError::InvalidBrightness { value, max: limit })
+                    if value == max + 1 && limit == max
+            ));
+        }
+    }
 
     #[test]
     fn default_image_formats_match_captured_dimensions() {

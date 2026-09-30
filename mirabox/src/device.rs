@@ -102,6 +102,22 @@ impl Device {
         Ok(())
     }
 
+    pub async fn set_screen_brightness(&self, brightness: u8) -> Result<(), DeviceError> {
+        let mut writer = self.writer.lock().await;
+        writer.initialize().await?;
+        writer
+            .write_command(&brightness_command(b"LIG\0\0", brightness))
+            .await
+    }
+
+    pub async fn set_light_brightness(&self, brightness: u8) -> Result<(), DeviceError> {
+        let mut writer = self.writer.lock().await;
+        writer.initialize().await?;
+        writer
+            .write_command(&brightness_command(b"LBLIG", brightness))
+            .await
+    }
+
     pub async fn keep_alive(&self) -> Result<(), DeviceError> {
         let mut writer = self.writer.lock().await;
         writer.initialize().await?;
@@ -146,6 +162,13 @@ fn command_report(command: &[u8]) -> [u8; REPORT_SIZE] {
     report
 }
 
+fn brightness_command(name: &[u8; 5], brightness: u8) -> [u8; 6] {
+    let mut command = [0; 6];
+    command[..5].copy_from_slice(name);
+    command[5] = brightness;
+    command
+}
+
 fn image_header(key: u8, length: usize) -> [u8; 8] {
     let [high, low] = (length as u16).to_be_bytes();
     [b'B', b'A', b'T', 0, 0, high, low, key + 1]
@@ -175,6 +198,23 @@ mod tests {
         let commit = command_report(b"STP");
         assert_eq!(&commit[..9], b"\0CRT\0\0STP");
         assert_eq!(commit.len(), 1025);
+    }
+
+    #[test]
+    fn frames_screen_and_light_brightness() {
+        for (name, value, expected) in [
+            (b"LIG\0\0", 100, b"\0CRT\0\0LIG\0\0\x64".as_slice()),
+            (b"LBLIG", 60, b"\0CRT\0\0LBLIG\x3c".as_slice()),
+        ] {
+            let report = command_report(&brightness_command(name, value));
+            assert_eq!(&report[..12], expected);
+            assert!(report[12..].iter().all(|byte| *byte == 0));
+            assert_eq!(report.len(), REPORT_SIZE);
+        }
+        let screen_off = command_report(&brightness_command(b"LIG\0\0", 0));
+        let lights_off = command_report(&brightness_command(b"LBLIG", 0));
+        assert_eq!(screen_off[11], 0);
+        assert_eq!(lights_off[11], 0);
     }
 
     #[test]
