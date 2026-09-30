@@ -1,16 +1,3 @@
-/// A MiraBox two-byte input report.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RawDeviceInput {
-    pub control: u8,
-    pub state: u8,
-}
-
-impl RawDeviceInput {
-    pub const fn new(control: u8, state: u8) -> Self {
-        Self { control, state }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KnobDirection {
     CounterClockwise,
@@ -25,165 +12,97 @@ pub enum SwipeDirection {
     Down,
 }
 
-/// A semantically decoded MiraBox N4 Pro input event.
+/// A decoded MiraBox N4 Pro vendor input report.
+///
+/// Touch ending codes are not universal button indexes: map them using the
+/// current host-side layout and coordinates. Keep raw bytes for unknown reports.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeviceEvent {
-    Button {
-        button: u8,
-        pressed: bool,
-    },
-    KnobPressed {
-        knob: u8,
-    },
-    KnobRotated {
-        knob: u8,
-        direction: KnobDirection,
-    },
-    /// A touch sample reports a touch-bar region index, not a virtual-button index.
-    ///
-    /// Touch-bar regions do not align regularly with virtual buttons, so this value
-    /// must not be used to identify the touched virtual button.
-    Touch {
-        touchbar_region: u8,
-    },
-    /// Touch release reports zero-based virtual-button index 0 through 3.
-    TouchReleased {
-        virtual_button: u8,
-    },
-    Swipe {
-        direction: SwipeDirection,
-    },
+    Button { button: u8, pressed: bool },
+    KnobPressed { knob: u8 },
+    KnobRotated { knob: u8, direction: KnobDirection },
+    TouchStart { x: u16 },
+    TouchMove { x: u16, y: u16 },
+    TouchEnd { code: u8, x: u16 },
+    Swipe { direction: SwipeDirection },
 }
 
-/// A decoded event enriched with its application-level meaning.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EnrichedDeviceEvent {
-    Button {
-        button: u8,
-        pressed: bool,
-    },
-    KnobPressed {
-        knob: u8,
-    },
-    KnobRotated {
-        knob: u8,
-        direction: KnobDirection,
-    },
-    /// A press on a virtual button.
-    ///
-    /// This event is emitted for `DeviceEvent::TouchReleased`, because release
-    /// reports—not touch samples—contain the virtual-button index.
-    Touch {
-        button: u8,
-    },
-    /// A touch-screen swipe direction without virtual-button position data.
-    Swipe {
-        direction: SwipeDirection,
-    },
-}
-
-/// Enriches input reports whose raw representation differs from their meaning.
-///
-/// Touch samples are ignored because their values identify irregular touch-bar
-/// regions rather than virtual buttons. A touch-release report identifies the
-/// virtual button and is converted to `EnrichedDeviceEvent::Touch`.
-#[derive(Debug, Default)]
-pub struct EventParser;
-
-impl EventParser {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn parse(&self, event: DeviceEvent) -> Option<EnrichedDeviceEvent> {
-        match event {
-            DeviceEvent::Touch { .. } => None,
-            DeviceEvent::TouchReleased { virtual_button } => Some(EnrichedDeviceEvent::Touch {
-                button: virtual_button,
-            }),
-            DeviceEvent::Button { button, pressed } => {
-                Some(EnrichedDeviceEvent::Button { button, pressed })
+impl DeviceEvent {
+    /// Decodes the captured `ACK/OK` and `ACK/ARX` families directly from a
+    /// vendor input report. Returns `None` for incomplete or unknown reports.
+    pub fn decode(report: &[u8]) -> Option<Self> {
+        if report.starts_with(b"ACK\0ARX\0\0") {
+            if report.len() < 14 {
+                return None;
             }
-            DeviceEvent::KnobPressed { knob } => Some(EnrichedDeviceEvent::KnobPressed { knob }),
-            DeviceEvent::KnobRotated { knob, direction } => {
-                Some(EnrichedDeviceEvent::KnobRotated { knob, direction })
-            }
-            DeviceEvent::Swipe { direction } => Some(EnrichedDeviceEvent::Swipe { direction }),
+            return Some(Self::TouchMove {
+                x: u16::from_be_bytes([report[10], report[11]]),
+                y: u16::from_be_bytes([report[12], report[13]]),
+            });
         }
-    }
-}
+        if !report.starts_with(b"ACK\0\0OK\0\0") || report.len() < 11 {
+            return None;
+        }
 
-impl TryFrom<RawDeviceInput> for DeviceEvent {
-    type Error = RawDeviceInput;
-
-    fn try_from(raw: RawDeviceInput) -> Result<Self, Self::Error> {
-        let event = match (raw.control, raw.state) {
-            (1..=10, 0) => Self::Button {
-                button: raw.control - 1,
-                pressed: false,
-            },
-            (1..=10, 1) => Self::Button {
-                button: raw.control - 1,
-                pressed: true,
-            },
-            (55, 1) => Self::KnobPressed { knob: 0 },
-            (53, 1) => Self::KnobPressed { knob: 1 },
-            (51, 1) => Self::KnobPressed { knob: 2 },
-            (54, 1) => Self::KnobPressed { knob: 3 },
-            (160, 0) => Self::KnobRotated {
+        let (code, state) = (report[9], report[10]);
+        let x = || (report.len() >= 13).then(|| u16::from_be_bytes([report[11], report[12]]));
+        match (code, state) {
+            (1..=10, 0 | 1) => Some(Self::Button {
+                button: code - 1,
+                pressed: state == 1,
+            }),
+            (0, 1) => Some(Self::TouchStart { x: x()? }),
+            (0 | 64..=67, 0) => Some(Self::TouchEnd { code, x: x()? }),
+            (55, 1) => Some(Self::KnobPressed { knob: 0 }),
+            (53, 1) => Some(Self::KnobPressed { knob: 1 }),
+            (51, 1) => Some(Self::KnobPressed { knob: 2 }),
+            (54, 1) => Some(Self::KnobPressed { knob: 3 }),
+            (160, 0) => Some(Self::KnobRotated {
                 knob: 0,
                 direction: KnobDirection::CounterClockwise,
-            },
-            (161, 0) => Self::KnobRotated {
+            }),
+            (161, 0) => Some(Self::KnobRotated {
                 knob: 0,
                 direction: KnobDirection::Clockwise,
-            },
-            (80, 0) => Self::KnobRotated {
+            }),
+            (80, 0) => Some(Self::KnobRotated {
                 knob: 1,
                 direction: KnobDirection::CounterClockwise,
-            },
-            (81, 0) => Self::KnobRotated {
+            }),
+            (81, 0) => Some(Self::KnobRotated {
                 knob: 1,
                 direction: KnobDirection::Clockwise,
-            },
-            (144, 0) => Self::KnobRotated {
+            }),
+            (144, 0) => Some(Self::KnobRotated {
                 knob: 2,
                 direction: KnobDirection::CounterClockwise,
-            },
-            (145, 0) => Self::KnobRotated {
+            }),
+            (145, 0) => Some(Self::KnobRotated {
                 knob: 2,
                 direction: KnobDirection::Clockwise,
-            },
-            (112, 0) => Self::KnobRotated {
+            }),
+            (112, 0) => Some(Self::KnobRotated {
                 knob: 3,
                 direction: KnobDirection::CounterClockwise,
-            },
-            (113, 0) => Self::KnobRotated {
+            }),
+            (113, 0) => Some(Self::KnobRotated {
                 knob: 3,
                 direction: KnobDirection::Clockwise,
-            },
-            (0, 0..=3) => Self::Touch {
-                touchbar_region: raw.state,
-            },
-            (64..=67, 0) => Self::TouchReleased {
-                virtual_button: raw.control - 64,
-            },
-            (56, 0) => Self::Swipe {
+            }),
+            (56, 0) => Some(Self::Swipe {
                 direction: SwipeDirection::Right,
-            },
-            (57, 0) => Self::Swipe {
+            }),
+            (57, 0) => Some(Self::Swipe {
                 direction: SwipeDirection::Left,
-            },
-            (177, 0) => Self::Swipe {
+            }),
+            (177, 0) => Some(Self::Swipe {
                 direction: SwipeDirection::Up,
-            },
-            (178, 0) => Self::Swipe {
+            }),
+            (178, 0) => Some(Self::Swipe {
                 direction: SwipeDirection::Down,
-            },
-            _ => return Err(raw),
-        };
-
-        Ok(event)
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -191,76 +110,84 @@ impl TryFrom<RawDeviceInput> for DeviceEvent {
 mod tests {
     use super::*;
 
+    fn ok_report(code: u8, state: u8, x: u16) -> [u8; 512] {
+        let mut report = [0; 512];
+        report[..9].copy_from_slice(b"ACK\0\0OK\0\0");
+        report[9] = code;
+        report[10] = state;
+        report[11..13].copy_from_slice(&x.to_be_bytes());
+        report
+    }
+
     #[test]
-    fn decodes_known_events() {
+    fn decodes_buttons_knobs_and_swipes() {
         assert_eq!(
-            DeviceEvent::try_from(RawDeviceInput::new(1, 1)).unwrap(),
-            DeviceEvent::Button {
+            DeviceEvent::decode(&ok_report(1, 1, 0)),
+            Some(DeviceEvent::Button {
                 button: 0,
-                pressed: true,
-            }
+                pressed: true
+            })
         );
         assert_eq!(
-            DeviceEvent::try_from(RawDeviceInput::new(161, 0)).unwrap(),
-            DeviceEvent::KnobRotated {
+            DeviceEvent::decode(&ok_report(10, 0, 0)),
+            Some(DeviceEvent::Button {
+                button: 9,
+                pressed: false
+            })
+        );
+        assert_eq!(
+            DeviceEvent::decode(&ok_report(0xa1, 0, 0)),
+            Some(DeviceEvent::KnobRotated {
                 knob: 0,
                 direction: KnobDirection::Clockwise,
-            }
-        );
-        assert_eq!(
-            DeviceEvent::try_from(RawDeviceInput::new(66, 0)).unwrap(),
-            DeviceEvent::TouchReleased { virtual_button: 2 }
-        );
-        assert_eq!(
-            DeviceEvent::try_from(RawDeviceInput::new(56, 0)).unwrap(),
-            DeviceEvent::Swipe {
-                direction: SwipeDirection::Right
-            }
-        );
-        assert_eq!(
-            DeviceEvent::try_from(RawDeviceInput::new(57, 0)).unwrap(),
-            DeviceEvent::Swipe {
-                direction: SwipeDirection::Left
-            }
-        );
-    }
-
-    #[test]
-    fn ignores_touch_samples_and_preserves_swipe_directions() {
-        let parser = EventParser::new();
-
-        assert_eq!(parser.parse(device_event(0, 1)), None);
-        assert_eq!(parser.parse(device_event(0, 2)), None);
-        assert_eq!(
-            parser.parse(device_event(57, 0)),
-            Some(EnrichedDeviceEvent::Swipe {
-                direction: SwipeDirection::Left,
             })
         );
         assert_eq!(
-            parser.parse(device_event(177, 0)),
-            Some(EnrichedDeviceEvent::Swipe {
-                direction: SwipeDirection::Up,
-            })
+            DeviceEvent::decode(&ok_report(0x35, 1, 0)),
+            Some(DeviceEvent::KnobPressed { knob: 1 })
         );
-        assert_eq!(
-            DeviceEvent::try_from(RawDeviceInput::new(42, 99)),
-            Err(RawDeviceInput::new(42, 99))
-        );
+        for (code, direction) in [
+            (0x38, SwipeDirection::Right),
+            (0x39, SwipeDirection::Left),
+            (0xb1, SwipeDirection::Up),
+            (0xb2, SwipeDirection::Down),
+        ] {
+            assert_eq!(
+                DeviceEvent::decode(&ok_report(code, 0, 0)),
+                Some(DeviceEvent::Swipe { direction })
+            );
+        }
     }
 
     #[test]
-    fn converts_touch_release_to_virtual_button_press() {
-        let parser = EventParser::new();
-
-        assert_eq!(parser.parse(device_event(0, 1)), None);
+    fn decodes_touch_fields_at_their_respective_offsets() {
         assert_eq!(
-            parser.parse(device_event(66, 0)),
-            Some(EnrichedDeviceEvent::Touch { button: 2 })
+            DeviceEvent::decode(&ok_report(0, 1, 291)),
+            Some(DeviceEvent::TouchStart { x: 291 })
         );
+        let mut movement = [0; 512];
+        movement[..9].copy_from_slice(b"ACK\0ARX\0\0");
+        movement[10..14].copy_from_slice(&[0x01, 0x23, 0x00, 0x78]);
+        assert_eq!(
+            DeviceEvent::decode(&movement),
+            Some(DeviceEvent::TouchMove { x: 291, y: 120 })
+        );
+        for code in [0, 0x40, 0x41, 0x42, 0x43] {
+            assert_eq!(
+                DeviceEvent::decode(&ok_report(code, 0, 300)),
+                Some(DeviceEvent::TouchEnd { code, x: 300 })
+            );
+        }
     }
 
-    fn device_event(control: u8, state: u8) -> DeviceEvent {
-        DeviceEvent::try_from(RawDeviceInput::new(control, state)).unwrap()
+    #[test]
+    fn rejects_unknown_families_codes_and_incomplete_reports() {
+        let movement = b"ACK\0ARX\0\0\0\x01\x23\0\x78";
+        assert_eq!(DeviceEvent::decode(&movement[..13]), None);
+        assert_eq!(DeviceEvent::decode(&ok_report(0x42, 99, 0)), None);
+        assert_eq!(DeviceEvent::decode(&ok_report(0, 2, 0)), None);
+        assert_eq!(DeviceEvent::decode(&ok_report(0, 1, 0)[..12]), None);
+        assert_eq!(DeviceEvent::decode(b"ACK\0\0OK\0\0\x01"), None);
+        assert_eq!(DeviceEvent::decode(b"BAD\0\0OK\0\0\x01\x01"), None);
     }
 }

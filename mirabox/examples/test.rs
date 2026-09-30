@@ -1,10 +1,7 @@
 use std::{error::Error, time::Duration};
 
 use image::{DynamicImage, ImageBuffer, Rgb};
-use mirabox::{
-    DeviceEvent, EventParser, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT,
-    VIRTUAL_BUTTON_IMAGE_FORMAT,
-};
+use mirabox::{MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT, VIRTUAL_BUTTON_IMAGE_FORMAT};
 
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 const DIGIT_GLYPHS: [[&str; 5]; 10] = [
@@ -56,29 +53,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     device.flush().await?;
 
     println!("Uploaded test images to 14 button displays (10 physical, 4 virtual).");
-    println!("Listening for raw and enriched events; press Control-C to exit.");
+    println!("Listening for events and raw reports; press Control-C to exit.");
 
-    let event_parser = EventParser::new();
     let mut keep_alive = tokio::time::interval(KEEP_ALIVE_INTERVAL);
     keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             _ = keep_alive.tick() => device.keep_alive().await?,
-            raw_input = device.read_raw_input() => {
-                if let Some(raw_input) = raw_input? {
-                    match DeviceEvent::try_from(raw_input) {
-                        Ok(event) => {
-                            println!("event: {event:?}");
-                            if let Some(event) = event_parser.parse(event) {
-                                println!("\x1b[1menriched: {event:?}\x1b[0m");
-                            }
-                        }
-                        Err(raw_input) => println!("\x1b[31mraw: {raw_input:?}\x1b[0m"),
-                    }
+            report_event = device.read_report_event() => {
+                let (report, event) = report_event?;
+                if let Some(event) = event {
+                    print!("event: {event:?} ");
                 }
+                print!("\x1b[2m");
+                for byte in visible_report(&report) {
+                    print!(" {:02x?}", byte);
+                }
+                println!("\x1b[m");
             }
         }
     }
+}
+
+fn visible_report(report: &[u8; 512]) -> &[u8] {
+    let end = report
+        .iter()
+        .rposition(|&byte| byte != 0)
+        .map_or(14, |index| (index + 1).max(14));
+    &report[..end]
 }
 
 fn test_image(key: u8, (width, height): (usize, usize)) -> DynamicImage {
@@ -99,6 +101,19 @@ fn test_image(key: u8, (width, height): (usize, usize)) -> DynamicImage {
     });
     draw_button_number(&mut image, key, width, height);
     DynamicImage::ImageRgb8(image)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_report;
+
+    #[test]
+    fn raw_display_keeps_header_and_nonzero_unknown_fields() {
+        let mut report = [0; 512];
+        assert_eq!(visible_report(&report).len(), 14);
+        report[20] = 0xaa;
+        assert_eq!(visible_report(&report), &report[..21]);
+    }
 }
 
 fn draw_button_number(

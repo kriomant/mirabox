@@ -3,14 +3,11 @@ use futures_lite::StreamExt;
 
 use tokio::sync::Mutex;
 
-use crate::{
-    DeviceError, HID_USAGE_ID, HID_USAGE_PAGE, MIRABOX_VENDOR_ID, N4_PRO_PRODUCT_ID, RawDeviceInput,
-};
+use crate::{DeviceError, HID_USAGE_ID, HID_USAGE_PAGE, MIRABOX_VENDOR_ID, N4_PRO_PRODUCT_ID};
 
 const PACKET_SIZE: usize = 1024;
 const REPORT_SIZE: usize = PACKET_SIZE + 1;
 const COMMAND_PREFIX: &[u8] = b"\0CRT\0\0";
-
 
 struct Writer {
     device: DeviceWriter,
@@ -111,7 +108,8 @@ impl Device {
         writer.write_command(b"CONNECT").await
     }
 
-    pub async fn read_raw_input(&self) -> Result<Option<RawDeviceInput>, DeviceError> {
+    pub async fn read_raw_report<const N: usize>(&self) -> Result<[u8; N], DeviceError> {
+        assert!(N <= 512, "vendor input report has at most 512 bytes");
         let mut buffer = [0; 512];
         let size = self
             .reader
@@ -119,7 +117,7 @@ impl Device {
             .await
             .read_input_report(&mut buffer)
             .await?;
-        Ok(parse_input(&buffer[..size.min(buffer.len())]))
+        report_prefix(&buffer[..size.min(buffer.len())])
     }
 }
 
@@ -153,11 +151,16 @@ fn image_header(key: u8, length: usize) -> [u8; 8] {
     [b'B', b'A', b'T', 0, 0, high, low, key + 1]
 }
 
-fn parse_input(report: &[u8]) -> Option<RawDeviceInput> {
-    if report.len() < 11 || !report.starts_with(b"ACK") {
-        return None;
+fn report_prefix<const N: usize>(bytes: &[u8]) -> Result<[u8; N], DeviceError> {
+    if bytes.len() < N {
+        return Err(DeviceError::ShortInputReport {
+            expected: N,
+            actual: bytes.len(),
+        });
     }
-    Some(RawDeviceInput::new(report[9], report[10]))
+    let mut prefix = [0; N];
+    prefix.copy_from_slice(&bytes[..N]);
+    Ok(prefix)
 }
 
 #[cfg(test)]
@@ -175,12 +178,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_only_complete_ack_reports() {
-        assert_eq!(
-            parse_input(b"ACK\0\0\0\0\0\0\xb1\xff"),
-            Some(RawDeviceInput::new(177, 255))
-        );
-        assert_eq!(parse_input(b"ACK\0\0\0\0\0\0\xb1"), None);
-        assert_eq!(parse_input(b"BAD\0\0\0\0\0\0\xb1\xff"), None);
+    fn copies_only_requested_prefix_and_rejects_short_reports() {
+        let report = [1, 2, 3, 4];
+        assert_eq!(report_prefix::<2>(&report).unwrap(), [1, 2]);
+        assert!(matches!(
+            report_prefix::<5>(&report),
+            Err(DeviceError::ShortInputReport {
+                expected: 5,
+                actual: 4
+            })
+        ));
     }
 }

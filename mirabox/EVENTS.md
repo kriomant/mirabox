@@ -1,70 +1,47 @@
-# MiraBox N4 Pro input reports
+# MiraBox N4 Pro vendor input reports
 
-The device emits a raw two-byte report, written here as `(control, state)`.
-`state = 1` means pressed and `state = 0` means released for physical buttons.
-
-All indices exposed by `DeviceEvent` are **zero-based**, even when the device's
-raw controls are one-based.
+The vendor collection returns 512-byte reports. `DeviceEvent::decode(&report)`
+decodes the captured `ACK/OK` and `ACK/ARX` families directly from report bytes;
+it returns `None` for unknown or incomplete reports. Use
+`MiraboxN4Pro::read_report_event()` to receive both the full report and its
+optional decoded event. `read_event()` returns just the optional event.
 
 ## Physical buttons
 
-| Raw report | Decoded event |
-| --- | --- |
-| `(1..=10, 1)` | `DeviceEvent::Button { button: control - 1, pressed: true }` |
-| `(1..=10, 0)` | `DeviceEvent::Button { button: control - 1, pressed: false }` |
+In `ACK/OK` reports, byte 9 is the one-based physical button ID (1–10), and
+byte 10 is `1` for press or `0` for release. `DeviceEvent::Button` uses a
+zero-based button index. Overlapping square-button presses are not independent
+rollover keys: the first-held key can appear released and pressed again.
 
-The device cannot faithfully report two physical buttons held at once: pressing a
-second button reports a release for the first; releasing the second reports a
-press for the first.
+## Rotary dials
 
-## Knobs
+The following `ACK/OK` byte-9 codes are decoded for the four dials from left
+to right. Rotations have byte 10 = `0`; mechanical pushes have byte 10 = `1`.
 
-| Control | Press report | Counter-clockwise | Clockwise |
+| Dial index | Clockwise | Counterclockwise | Push |
 | --- | --- | --- | --- |
-| 0 | `(55, 1)` | `(160, 0)` | `(161, 0)` |
-| 1 | `(53, 1)` | `(80, 0)` | `(81, 0)` |
-| 2 | `(51, 1)` | `(144, 0)` | `(145, 0)` |
-| 3 | `(54, 1)` | `(112, 0)` | `(113, 0)` |
+| 0 | `a1` | `a0` | `37` |
+| 1 | `51` | `50`* | `35` |
+| 2 | `91` | `90`* | `33` |
+| 3 | `71` | `70`* | `36` |
 
-A knob has no release report. While a knob is pressed, input from another knob
-is not reported. Knobs continue to report while a physical button or touch is
-active.
+*These counterclockwise codes are currently inferred in the implementation,
+not confirmed by the capture-backed protocol spec.
 
-## Touch screen
+## Touchscreen
 
-| Raw report | Decoded event | Meaning |
-| --- | --- | --- |
-| `(0, 0..=3)` | `Touch { touchbar_region }` | Periodic touch sample, roughly 20 Hz |
-| `(64..=67, 0)` | `TouchReleased { virtual_button: control - 64 }` | Release on virtual buttons 0 through 3 |
-| `(56, 0)` | `DeviceEvent::Swipe { Right }` | Swipe right |
-| `(57, 0)` | `DeviceEvent::Swipe { Left }` | Swipe left |
-| `(177, 0)` | `DeviceEvent::Swipe { Up }` | Swipe up |
-| `(178, 0)` | `DeviceEvent::Swipe { Down }` | Swipe down |
+- `ACK/OK` code `00`, state `01`: `TouchStart { x }`, with BE16 X at bytes 11–12.
+- `ACK/ARX`: `TouchMove { x, y }`, with BE16 X at bytes 10–11 and BE16 Y at bytes 12–13. It is not a second code/state report.
+- `ACK/OK` code `00` or `40`–`43`, state `00`: `TouchEnd { code, x }`, with BE16 X at bytes 11–12. The code is **not** a universal virtual-button index; map it using the current layout and touch position.
+- `ACK/OK` codes `38`, `39`, `b1`, `b2`, state `00`: `Swipe { Right, Left, Up, Down }`, respectively.
 
-`Touch { touchbar_region }` is a device quirk: its value identifies a touch-bar
-region, **not** a virtual button. The regions do not map regularly to virtual
-buttons, so `EventParser` ignores all touch samples. Swipe reports are preserved
-as `EnrichedDeviceEvent::Swipe { direction }`; no virtual-button position is
-available for them. In contrast, `TouchReleased { virtual_button }` does contain
-the zero-based virtual-button index. `EventParser` converts it into one
-`EnrichedDeviceEvent::Touch { button }` press event.
+The device reports one touch stream, not independent multitouch slots. A
+square button held before a new touch can suppress that touch; the reverse
+order does not necessarily suppress the square-button events.
 
-`MiraboxN4Pro::read_event` returns these enriched events; `DeviceEvent` remains
-the stateless raw-report decoding API. Unknown raw reports are dropped.
+## Raw transport
 
-Touch input is suppressed while a physical button is pressed. In the opposite
-direction, physical button events continue to report while a touch is active.
-
-## Input transport
-
-`MiraboxN4Pro::read_raw_input` reads the control and state bytes directly from
-ACK reports, preserving values such as controls 160--178. Reports without an ACK
-prefix or both input bytes return `None`. Unknown inputs are dropped by
-`MiraboxN4Pro::read_event`.
-
-## Simultaneous-input behavior
-
-- Knob events are reported normally while a physical button is held.
-- Knob and touch events are reported normally while touch is active.
-- Button events are reported normally while a knob is held.
-- Touch events are reported while a knob is held.
+`read_raw_report::<N>()` returns the first `N` bytes as a fixed-size array
+without a heap allocation. Choose `N = 14` to cover known touch fields or
+`N = 512` to retain every byte, including unknown firmware data. If the
+transport read is shorter than `N`, it returns an error. `N > 512` is invalid.

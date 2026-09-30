@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, error::Error, process::ExitCode, time::Duration
 
 mod widget;
 
-use mirabox::{EnrichedDeviceEvent, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT};
+use mirabox::{DeviceEvent, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT};
 use widget::{CounterWidget, Updated, Widget, WidgetEvent};
 
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
@@ -110,7 +110,7 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
                 }
             }
             event = device.read_event() => {
-                if let Some(EnrichedDeviceEvent::Button { button, pressed }) = event? {
+                if let Some(DeviceEvent::Button { button, pressed }) = event? {
                     let widget_event = if pressed {
                         WidgetEvent::Pressed
                     } else {

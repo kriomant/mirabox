@@ -16,6 +16,7 @@ pub enum DeviceError {
     Image(ImageError),
     DeviceNotFound,
     MissingSerialNumber,
+    ShortInputReport { expected: usize, actual: usize },
 }
 
 impl fmt::Display for DeviceError {
@@ -25,6 +26,9 @@ impl fmt::Display for DeviceError {
             Self::Image(error) => write!(f, "image error: {error}"),
             Self::DeviceNotFound => write!(f, "device disappeared during connection"),
             Self::MissingSerialNumber => write!(f, "device has no serial number"),
+            Self::ShortInputReport { expected, actual } => {
+                write!(f, "short input report: expected at least {expected} bytes, got {actual}")
+            }
         }
     }
 }
@@ -58,9 +62,7 @@ pub struct ImageFormat {
     pub size: (usize, usize),
 }
 
-pub use event::{
-    DeviceEvent, EnrichedDeviceEvent, EventParser, KnobDirection, RawDeviceInput, SwipeDirection,
-};
+pub use event::{DeviceEvent, KnobDirection, SwipeDirection};
 
 const HID_USAGE_PAGE: u16 = 0xffa0;
 const HID_USAGE_ID: u16 = 1;
@@ -80,7 +82,7 @@ pub const VIRTUAL_BUTTON_IMAGE_FORMAT: ImageFormat = ImageFormat { size: (176, 1
 pub struct MiraboxN4Pro {
     device: Device,
     images: Mutex<HashMap<u8, Vec<u8>>>,
-    event_parser: EventParser,
+
 }
 
 impl MiraboxN4Pro {
@@ -89,7 +91,7 @@ impl MiraboxN4Pro {
         Ok(Device::connect().await?.map(|device| Self {
             device,
             images: Mutex::new(HashMap::new()),
-            event_parser: EventParser::new(),
+
         }))
     }
 
@@ -133,31 +135,29 @@ impl MiraboxN4Pro {
         self.device.keep_alive().await
     }
 
-    /// Waits for the next raw device input report.
+    /// Reads a vendor input report and returns its first `N` bytes as an array.
     ///
-    /// `None` denotes a transport report that did not contain input data.
-    pub async fn read_raw_input(&self) -> Result<Option<RawDeviceInput>, DeviceError> {
-        self.device.read_raw_input().await
+    /// Use `N = 11` for `ACK/OK` code/state, `N = 14` for `ACK/ARX` X/Y,
+    /// or `N = 512` to retain the entire report including unknown fields.
+    /// Panics if `N > 512`; returns an error if the transport supplies fewer
+    /// than `N` bytes. No heap allocation is performed for the returned array.
+    pub async fn read_raw_report<const N: usize>(&self) -> Result<[u8; N], DeviceError> {
+        self.device.read_raw_report().await
     }
 
-    /// Waits for the next device input report and decodes it.
-    ///
-    /// Returns an enriched event for the next input report, if there is one.
-    ///
-    /// Touch samples are ignored because their values identify touch-bar regions,
-    /// not virtual buttons. A touch-release report produces an enriched `Touch`
-    /// press event using its virtual-button index. Swipes are returned with only
-    /// their direction. Reports without input or a recognized event return `None`.
-    pub async fn read_event(&self) -> Result<Option<EnrichedDeviceEvent>, DeviceError> {
-        let Some(raw) = self.read_raw_input().await? else {
-            return Ok(None);
-        };
 
-        let Ok(event) = DeviceEvent::try_from(raw) else {
-            return Ok(None);
-        };
+    /// Waits for a report and returns its raw bytes alongside any decoded event.
+    /// Unknown reports remain available even when they cannot be decoded.
+    pub async fn read_report_event(&self) -> Result<([u8; 512], Option<DeviceEvent>), DeviceError> {
+        let report = self.read_raw_report::<512>().await?;
+        let event = DeviceEvent::decode(&report);
+        Ok((report, event))
+    }
 
-        Ok(self.event_parser.parse(event))
+    /// Waits for the next report and decodes it, returning `None` for unknown
+    /// reports. Use [`Self::read_report_event`] to retain their raw bytes.
+    pub async fn read_event(&self) -> Result<Option<DeviceEvent>, DeviceError> {
+        Ok(self.read_report_event().await?.1)
     }
 
     /// Returns the device serial number.
