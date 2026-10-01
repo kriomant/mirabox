@@ -91,16 +91,37 @@ impl Device {
             writer
                 .write_command(&image_header(key, bytes.len()))
                 .await?;
-            for chunk in bytes.chunks(PACKET_SIZE) {
-                let mut report = [0; REPORT_SIZE];
-                report[1..1 + chunk.len()].copy_from_slice(chunk);
-                writer.device.write_output_report(&report).await?;
-            }
+            writer.write_image_data(bytes).await?;
         }
         if wrote_image {
             writer.write_command(b"STP").await?;
         }
         Ok(())
+    }
+
+    pub async fn write_background_image(
+        &self,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+        selector: [u8; 2],
+        bytes: &[u8],
+    ) -> Result<(), DeviceError> {
+        let length = u32::try_from(bytes.len())
+            .map_err(|_| DeviceError::BackgroundImageTooLarge { length: bytes.len() })?;
+        let mut writer = self.writer.lock().await;
+        writer.initialize().await?;
+        writer
+            .write_command(&background_image_header(length, x, y, width, height, selector))
+            .await?;
+        writer.write_image_data(bytes).await
+    }
+
+    pub async fn clear_background_image(&self) -> Result<(), DeviceError> {
+        let mut writer = self.writer.lock().await;
+        writer.initialize().await?;
+        writer.write_command(b"BGCLE\x03\0").await
     }
 
     pub async fn set_screen_brightness(&self, brightness: u8) -> Result<(), DeviceError> {
@@ -160,6 +181,15 @@ impl Writer {
         Ok(())
     }
 
+    async fn write_image_data(&mut self, bytes: &[u8]) -> Result<(), DeviceError> {
+        for chunk in bytes.chunks(PACKET_SIZE) {
+            let mut report = [0; REPORT_SIZE];
+            report[1..1 + chunk.len()].copy_from_slice(chunk);
+            self.device.write_output_report(&report).await?;
+        }
+        Ok(())
+    }
+
     async fn write_command(&mut self, command: &[u8]) -> Result<(), DeviceError> {
         self.device
             .write_output_report(&command_report(command))
@@ -202,6 +232,24 @@ fn image_header(key: u8, length: usize) -> [u8; 8] {
     [b'B', b'A', b'T', 0, 0, high, low, key + 1]
 }
 
+fn background_image_header(
+    length: u32,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    selector: [u8; 2],
+) -> [u8; 19] {
+    let mut command = [0; 19];
+    command[..5].copy_from_slice(b"BGPIC");
+    command[5..9].copy_from_slice(&length.to_be_bytes());
+    for (offset, value) in [(9, x), (11, y), (13, width), (15, height)] {
+        command[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    command[17..19].copy_from_slice(&selector);
+    command
+}
+
 fn report_prefix<const N: usize>(bytes: &[u8]) -> Result<[u8; N], DeviceError> {
     if bytes.len() < N {
         return Err(DeviceError::ShortInputReport {
@@ -226,6 +274,35 @@ mod tests {
         let commit = command_report(b"STP");
         assert_eq!(&commit[..9], b"\0CRT\0\0STP");
         assert_eq!(commit.len(), 1025);
+    }
+
+    #[test]
+    fn frames_background_upload_and_clear() {
+        let header = command_report(&background_image_header(
+            22_517, 1, 1, 798, 478, [1, 0],
+        ));
+        assert_eq!(
+            &header[..25],
+            b"\0CRT\0\0BGPIC\0\0\x57\xf5\0\x01\0\x01\x03\x1e\x01\xde\x01\0"
+        );
+        assert!(header[25..].iter().all(|byte| *byte == 0));
+        let button_area = command_report(&background_image_header(
+            9_383, 2, 187, 798, 298, [1, 0],
+        ));
+        assert_eq!(
+            &button_area[6..25],
+            b"BGPIC\0\0\x24\xa7\0\x02\0\xbb\x03\x1e\x01\x2a\x01\0"
+        );
+        let knob_area = command_report(&background_image_header(
+            6_500, 2, 2, 798, 148, [2, 0],
+        ));
+        assert_eq!(
+            &knob_area[6..25],
+            b"BGPIC\0\0\x19\x64\0\x02\0\x02\x03\x1e\0\x94\x02\0"
+        );
+        let clear = command_report(b"BGCLE\x03\0");
+        assert_eq!(&clear[..13], b"\0CRT\0\0BGCLE\x03\0");
+        assert!(clear[13..].iter().all(|byte| *byte == 0));
     }
 
     #[test]

@@ -10,6 +10,8 @@ const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(1);
 const BRIGHTNESS_STEP: u8 = 5;
 const MAX_LIGHT_BRIGHTNESS: u8 = 60;
 const MAX_SCREEN_BRIGHTNESS: u8 = 100;
+const BUTTON_BACKGROUND_SIZE: (u32, u32) = (798, 298);
+const KNOB_BACKGROUND_SIZE: (u32, u32) = (798, 148);
 const DIGIT_GLYPHS: [[&str; 5]; 10] = [
     ["111", "1 1", "1 1", "1 1", "111"],
     [" 1 ", "11 ", " 1 ", " 1 ", "111"],
@@ -46,6 +48,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut vibro_feedback_enabled = true;
     device.set_vibro_feedback(vibro_feedback_enabled).await?;
     println!("Button 1: toggle vibro feedback (initially enabled).");
+    println!("Button 2: toggle Button and Knob Area backgrounds on/off.");
+    let mut background_enabled = false;
     println!("Knob 1: backlight brightness (0–60), currently {light_brightness}");
     println!("Knob 2: screen brightness (0–100), currently {screen_brightness}");
     println!("Clockwise increases; counterclockwise decreases.");
@@ -97,6 +101,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         device.set_vibro_feedback(next).await?;
                         vibro_feedback_enabled = next;
                         println!("Vibro feedback: {}", if next { "enabled" } else { "disabled" });
+                    }
+                    Some(DeviceEvent::Button { button: 1, pressed: true }) => {
+                        if background_enabled {
+                            device.clear_background_image().await?;
+                            println!("Background: cleared");
+                        } else {
+                            device
+                                .set_background_image(
+                                    2,
+                                    187,
+                                    [1, 0],
+                                    test_background_image(BUTTON_BACKGROUND_SIZE, [20, 90, 160]),
+                                )
+                                .await?;
+                            device
+                                .set_background_image(
+                                    2,
+                                    2,
+                                    [2, 0],
+                                    test_background_image(KNOB_BACKGROUND_SIZE, [100, 40, 150]),
+                                )
+                                .await?;
+                            println!("Background: Button and Knob Area images uploaded");
+                        }
+                        background_enabled = !background_enabled;
                     }
                     Some(DeviceEvent::KnobRotated { knob: 0, direction }) => {
                         let next = adjust_brightness(
@@ -158,6 +187,16 @@ fn test_image(key: u8, (width, height): (usize, usize)) -> DynamicImage {
     });
     draw_button_number(&mut image, key, width, height);
     DynamicImage::ImageRgb8(image)
+}
+
+fn test_background_image((width, height): (u32, u32), color: [u8; 3]) -> DynamicImage {
+    DynamicImage::ImageRgb8(ImageBuffer::from_fn(width, height, |x, y| {
+        if ((x / 80) + (y / 80)) % 2 == 0 {
+            Rgb(color)
+        } else {
+            Rgb([240, 170, 45])
+        }
+    }))
 }
 
 #[cfg(test)]
