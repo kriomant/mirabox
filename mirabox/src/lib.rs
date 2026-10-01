@@ -148,6 +148,12 @@ impl MiraboxN4Pro {
         self.device.set_light_brightness(brightness).await
     }
 
+    /// Sets the RGB color of each knob's LED, in zero-based knob order (0–3).
+    /// All four colors are sent together; each color is `[red, green, blue]`.
+    pub async fn set_led_colors(&self, colors: [[u8; 3]; 4]) -> Result<(), DeviceError> {
+        self.device.set_led_colors(colors).await
+    }
+
     /// Enables or disables the device's vibro feedback.
     ///
     /// Uses a captured `QUCMD` template with “Follow the software” lighting mode;

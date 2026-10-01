@@ -119,6 +119,12 @@ impl Device {
             .await
     }
 
+    pub async fn set_led_colors(&self, colors: [[u8; 3]; 4]) -> Result<(), DeviceError> {
+        let mut writer = self.writer.lock().await;
+        writer.initialize().await?;
+        writer.write_command(&led_colors_command(colors)).await
+    }
+
     pub async fn set_vibro_feedback(&self, enabled: bool) -> Result<(), DeviceError> {
         let mut writer = self.writer.lock().await;
         writer.initialize().await?;
@@ -176,6 +182,15 @@ fn brightness_command(name: &[u8; 5], brightness: u8) -> [u8; 6] {
     command
 }
 
+fn led_colors_command(colors: [[u8; 3]; 4]) -> [u8; 17] {
+    let mut command = [0; 17];
+    command[..5].copy_from_slice(b"SETLB");
+    for (index, color) in colors.into_iter().enumerate() {
+        command[5 + index * 3..8 + index * 3].copy_from_slice(&color);
+    }
+    command
+}
+
 fn vibro_feedback_command(enabled: bool) -> [u8; 11] {
     let mut command = VIBRO_FEEDBACK_COMMAND;
     command[8] = if enabled { 0x11 } else { 0xff };
@@ -228,6 +243,22 @@ mod tests {
         let lights_off = command_report(&brightness_command(b"LBLIG", 0));
         assert_eq!(screen_off[11], 0);
         assert_eq!(lights_off[11], 0);
+    }
+
+    #[test]
+    fn frames_per_knob_led_colors() {
+        let report = command_report(&led_colors_command([
+            [0xff, 0, 0],
+            [0, 0x80, 0],
+            [0, 0, 0xff],
+            [0x12, 0x34, 0x56],
+        ]));
+        assert_eq!(
+            &report[..23],
+            b"\0CRT\0\0SETLB\xff\0\0\0\x80\0\0\0\xff\x12\x34\x56"
+        );
+        assert!(report[23..].iter().all(|byte| *byte == 0));
+        assert_eq!(report.len(), REPORT_SIZE);
     }
 
     #[test]

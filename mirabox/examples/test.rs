@@ -40,6 +40,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut screen_brightness = MAX_SCREEN_BRIGHTNESS / 2;
     device.set_light_brightness(light_brightness).await?;
     device.set_screen_brightness(screen_brightness).await?;
+    device
+        .set_led_colors([[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]])
+        .await?;
     let mut vibro_feedback_enabled = true;
     device.set_vibro_feedback(vibro_feedback_enabled).await?;
     println!("Button 1: toggle vibro feedback (initially enabled).");
