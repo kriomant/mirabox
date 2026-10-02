@@ -156,9 +156,11 @@ impl MiraboxN4Pro {
     pub async fn flush(&self) -> Result<(), DeviceError> {
         let mut images = self.images.lock().await;
         // Retain the entire batch for retry if any write or the commit fails.
-        self.device
-            .write_images(images.iter().map(|(&key, bytes)| (key, bytes.as_slice())))
-            .await?;
+        let pending: Vec<_> = images
+            .iter()
+            .map(|(&key, bytes)| (key, bytes.as_slice()))
+            .collect();
+        self.device.write_images(pending).await?;
         images.clear();
         Ok(())
     }
