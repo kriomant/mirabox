@@ -617,15 +617,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mirage"
-version = "0.1.0"
-dependencies = [
- "image",
- "mirabox",
- "tokio",
-]
-
-[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
