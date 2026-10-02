@@ -1,6 +1,6 @@
 use std::{error::Error, time::Duration};
 
-use image::{DynamicImage, ImageBuffer, Rgb};
+use image::{DynamicImage, ImageBuffer, Rgb, codecs::jpeg::JpegEncoder};
 use mirabox::{
     DeviceEvent, KnobDirection, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT,
     VIRTUAL_BUTTON_IMAGE_FORMAT,
@@ -56,24 +56,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Each detent changes brightness by {BRIGHTNESS_STEP}.");
 
     for virtual_button in 0..4 {
-        device
-            .set_image(
-                virtual_button,
-                VIRTUAL_BUTTON_IMAGE_FORMAT,
-                test_image(virtual_button, VIRTUAL_BUTTON_IMAGE_FORMAT.size),
-            )
-            .await?;
+        let image = test_image(virtual_button, VIRTUAL_BUTTON_IMAGE_FORMAT.size).rotate180();
+        device.set_image(virtual_button, &encode_jpeg(image)?).await?;
     }
     for button in 0..10 {
         let key = MiraboxN4Pro::physical_button_image_key(button)
             .expect("the test only addresses physical buttons 0 through 9");
-        device
-            .set_image(
-                key,
-                PHYSICAL_BUTTON_IMAGE_FORMAT,
-                test_image(button, PHYSICAL_BUTTON_IMAGE_FORMAT.size),
-            )
-            .await?;
+        let image = test_image(button, PHYSICAL_BUTTON_IMAGE_FORMAT.size).rotate180();
+        device.set_image(key, &encode_jpeg(image)?).await?;
     }
     device.flush().await?;
 
@@ -111,16 +101,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 .set_background_image(
                                     2,
                                     187,
+                                    BUTTON_BACKGROUND_SIZE.0 as u16,
+                                    BUTTON_BACKGROUND_SIZE.1 as u16,
                                     [1, 0],
-                                    test_background_image(BUTTON_BACKGROUND_SIZE, [20, 90, 160]),
+                                    &encode_jpeg(test_background_image(BUTTON_BACKGROUND_SIZE, [20, 90, 160]))?,
                                 )
                                 .await?;
                             device
                                 .set_background_image(
                                     2,
                                     2,
+                                    KNOB_BACKGROUND_SIZE.0 as u16,
+                                    KNOB_BACKGROUND_SIZE.1 as u16,
                                     [2, 0],
-                                    test_background_image(KNOB_BACKGROUND_SIZE, [100, 40, 150]),
+                                    &encode_jpeg(test_background_image(KNOB_BACKGROUND_SIZE, [100, 40, 150]))?,
                                 )
                                 .await?;
                             println!("Background: Button and Knob Area images uploaded");
@@ -199,9 +193,22 @@ fn test_background_image((width, height): (u32, u32), color: [u8; 3]) -> Dynamic
     }))
 }
 
+fn encode_jpeg(image: DynamicImage) -> Result<Vec<u8>, image::ImageError> {
+    let image = image.into_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 90).encode(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ColorType::Rgb8.into(),
+    )?;
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BRIGHTNESS_STEP, adjust_brightness, visible_report};
+    use super::{BRIGHTNESS_STEP, adjust_brightness, encode_jpeg, visible_report};
+    use image::{DynamicImage, Rgb, RgbImage};
     use mirabox::KnobDirection;
 
     #[test]
@@ -216,6 +223,18 @@ mod tests {
                 max / 2 + BRIGHTNESS_STEP
             );
         }
+    }
+
+    #[test]
+    fn encodes_background_jpeg_without_resizing_or_rotating() {
+        let mut image = RgbImage::new(2, 1);
+        image.put_pixel(0, 0, Rgb([255, 0, 0]));
+        image.put_pixel(1, 0, Rgb([0, 0, 255]));
+        let bytes = encode_jpeg(DynamicImage::ImageRgb8(image)).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().into_rgb8();
+        assert_eq!(decoded.dimensions(), (2, 1));
+        assert!(decoded.get_pixel(0, 0)[0] > decoded.get_pixel(0, 0)[2]);
+        assert!(decoded.get_pixel(1, 0)[2] > decoded.get_pixel(1, 0)[0]);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, error::Error, process::ExitCode, time::Duration
 
 mod widget;
 
+use image::{codecs::jpeg::JpegEncoder, imageops::FilterType};
 use mirabox::{DeviceEvent, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT};
 use widget::{CounterWidget, Updated, Widget, WidgetEvent};
 
@@ -70,6 +71,41 @@ impl WidgetRegistry {
     }
 }
 
+fn encode_image(image: image::DynamicImage) -> Result<Vec<u8>, image::ImageError> {
+    let (width, height) = PHYSICAL_BUTTON_IMAGE_FORMAT.size;
+    let image = image
+        .resize_exact(width as u32, height as u32, FilterType::Lanczos3)
+        .rotate180()
+        .into_rgb8();
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 90).encode(
+        image.as_raw(),
+        width as u32,
+        height as u32,
+        image::ColorType::Rgb8.into(),
+    )?;
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_image;
+    use image::{DynamicImage, Rgb, RgbImage};
+
+    #[test]
+    fn encodes_rotated_jpeg_at_button_size() {
+        let mut image = RgbImage::new(2, 1);
+        image.put_pixel(0, 0, Rgb([255, 0, 0]));
+        image.put_pixel(1, 0, Rgb([0, 0, 255]));
+
+        let bytes = encode_image(DynamicImage::ImageRgb8(image)).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().into_rgb8();
+        assert_eq!(decoded.dimensions(), (112, 112));
+        assert!(decoded.get_pixel(0, 0)[2] > decoded.get_pixel(0, 0)[0]);
+        assert!(decoded.get_pixel(111, 111)[0] > decoded.get_pixel(111, 111)[2]);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<ExitCode, Box<dyn Error>> {
     let Some(device) = MiraboxN4Pro::connect().await? else {
@@ -88,9 +124,7 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
     widgets.register(0, |updated| Box::new(CounterWidget::new(updated)));
 
     for image in widgets.images() {
-        device
-            .set_image(image.key, PHYSICAL_BUTTON_IMAGE_FORMAT, image.image)
-            .await?;
+        device.set_image(image.key, &encode_image(image.image)?).await?;
     }
     device.flush().await?;
 
@@ -103,9 +137,7 @@ async fn main() -> Result<ExitCode, Box<dyn Error>> {
             _ = keep_alive.tick() => device.keep_alive().await?,
             Some(button) = widget_update_receiver.recv() => {
                 if let Some(image) = widgets.image(button) {
-                    device
-                        .set_image(image.key, PHYSICAL_BUTTON_IMAGE_FORMAT, image.image)
-                        .await?;
+                    device.set_image(image.key, &encode_image(image.image)?).await?;
                     device.flush().await?;
                 }
             }

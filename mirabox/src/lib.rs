@@ -7,16 +7,11 @@ use std::{collections::HashMap, error::Error, fmt};
 
 use async_hid::HidError;
 use device::Device;
-use image::{
-    DynamicImage, GenericImageView as _, ImageError, codecs::jpeg::JpegEncoder,
-    imageops::FilterType,
-};
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub enum DeviceError {
     Hid(HidError),
-    Image(ImageError),
     DeviceNotFound,
     MissingSerialNumber,
     InvalidBrightness { value: u8, max: u8 },
@@ -29,7 +24,6 @@ impl fmt::Display for DeviceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Hid(error) => write!(f, "HID error: {error}"),
-            Self::Image(error) => write!(f, "image error: {error}"),
             Self::DeviceNotFound => write!(f, "device disappeared during connection"),
             Self::MissingSerialNumber => write!(f, "device has no serial number"),
             Self::InvalidBrightness { value, max } => {
@@ -52,7 +46,6 @@ impl Error for DeviceError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Hid(error) => Some(error),
-            Self::Image(error) => Some(error),
             _ => None,
         }
     }
@@ -64,13 +57,8 @@ impl From<HidError> for DeviceError {
     }
 }
 
-impl From<ImageError> for DeviceError {
-    fn from(error: ImageError) -> Self {
-        Self::Image(error)
-    }
-}
 
-/// JPEG image size for an N4 Pro display. Images are rotated 180° before upload.
+/// Image dimensions for an N4 Pro display. Button images must be rotated 180° before upload.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageFormat {
     /// Output width and height in pixels.
@@ -119,25 +107,22 @@ impl MiraboxN4Pro {
         }
     }
 
-    /// Queues an image for the display identified by `key`.
+    /// Queues encoded image bytes (such as JPEG or PNG) for the display identified by `key`.
     ///
+    /// Prepare the image at the appropriate display size, rotated 180° before encoding.
+    /// The bytes are uploaded unchanged.
     /// Call [`Self::flush`] to make queued images visible.
-    pub async fn set_image(
-        &self,
-        key: u8,
-        format: ImageFormat,
-        image: DynamicImage,
-    ) -> Result<(), DeviceError> {
+    pub async fn set_image(&self, key: u8, image: &[u8]) -> Result<(), DeviceError> {
         self.device.initialize().await?;
-        let bytes = tokio::task::block_in_place(move || encode_image(format, image))?;
-        self.images.lock().await.insert(key, bytes);
+        self.images.lock().await.insert(key, image.to_vec());
         Ok(())
     }
 
-    /// Uploads a rectangular background JPEG at `(x, y)` using the supplied
-    /// opaque, capture-specific selector bytes. The image is not resized or
-    /// rotated. Captured Button Area frames used `(2, 187, 798, 298)` and
-    /// `[1, 0]`; Knob Area frames used `(2, 2, 798, 148)` and `[2, 0]`.
+    /// Uploads an encoded rectangular background image (such as JPEG or PNG)
+    /// at `(x, y)` using the supplied dimensions and opaque, capture-specific
+    /// selector bytes. The bytes are sent unchanged. Captured Button Area frames
+    /// used `(2, 187, 798, 298)` and `[1, 0]`; Knob Area frames used
+    /// `(2, 2, 798, 148)` and `[2, 0]`.
     /// An Overall Area frame also used `[1, 0]` with a larger rectangle, so
     /// the selector alone does not determine the area.
     /// Unlike button images, the upload is sent immediately without `flush`.
@@ -145,18 +130,19 @@ impl MiraboxN4Pro {
         &self,
         x: u16,
         y: u16,
+        width: u16,
+        height: u16,
         selector: [u8; 2],
-        image: DynamicImage,
+        image: &[u8],
     ) -> Result<(), DeviceError> {
-        let (width, height) = image.dimensions();
-        let (width, height) = match (u16::try_from(width), u16::try_from(height)) {
-            (Ok(width), Ok(height)) if width != 0 && height != 0 => (width, height),
-            _ => return Err(DeviceError::InvalidBackgroundSize { width, height }),
-        };
-        let bytes = tokio::task::block_in_place(move || encode_background_image(image))?;
-
+        if width == 0 || height == 0 {
+            return Err(DeviceError::InvalidBackgroundSize {
+                width: width.into(),
+                height: height.into(),
+            });
+        }
         self.device
-            .write_background_image(x, y, width, height, selector, &bytes)
+            .write_background_image(x, y, width, height, selector, image)
             .await
     }
 
@@ -255,34 +241,6 @@ fn validate_brightness(value: u8, max: u8) -> Result<(), DeviceError> {
     }
 }
 
-fn encode_image(format: ImageFormat, image: DynamicImage) -> Result<Vec<u8>, ImageError> {
-    let (width, height) = format.size;
-    let image = image
-        .resize_exact(width as u32, height as u32, FilterType::Lanczos3)
-        .rotate180()
-        .into_rgb8();
-    let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 90).encode(
-        image.as_raw(),
-        width as u32,
-        height as u32,
-        image::ColorType::Rgb8.into(),
-    )?;
-    Ok(bytes)
-}
-
-fn encode_background_image(image: DynamicImage) -> Result<Vec<u8>, ImageError> {
-    let image = image.into_rgb8();
-    let (width, height) = image.dimensions();
-    let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 90).encode(
-        image.as_raw(),
-        width,
-        height,
-        image::ColorType::Rgb8.into(),
-    )?;
-    Ok(bytes)
-}
 
 #[cfg(test)]
 mod tests {
@@ -305,31 +263,5 @@ mod tests {
     fn default_image_formats_match_captured_dimensions() {
         assert_eq!(PHYSICAL_BUTTON_IMAGE_FORMAT.size, (112, 112));
         assert_eq!(VIRTUAL_BUTTON_IMAGE_FORMAT.size, (176, 112));
-    }
-
-    #[test]
-    fn encodes_background_jpeg_without_resizing_or_rotating() {
-        let mut image = image::RgbImage::new(2, 1);
-        image.put_pixel(0, 0, image::Rgb([255, 0, 0]));
-        image.put_pixel(1, 0, image::Rgb([0, 0, 255]));
-        let bytes = encode_background_image(DynamicImage::ImageRgb8(image)).unwrap();
-        let decoded = image::load_from_memory(&bytes).unwrap().into_rgb8();
-        assert_eq!(decoded.dimensions(), (2, 1));
-        assert!(decoded.get_pixel(0, 0)[0] > decoded.get_pixel(0, 0)[2]);
-        assert!(decoded.get_pixel(1, 0)[2] > decoded.get_pixel(1, 0)[0]);
-    }
-
-    #[test]
-    fn encodes_rotated_jpeg_at_requested_size() {
-        let mut image = image::RgbImage::new(2, 1);
-        image.put_pixel(0, 0, image::Rgb([255, 0, 0]));
-        image.put_pixel(1, 0, image::Rgb([0, 0, 255]));
-
-        let bytes = encode_image(ImageFormat { size: (2, 1) }, DynamicImage::ImageRgb8(image))
-            .unwrap();
-        let decoded = image::load_from_memory(&bytes).unwrap().into_rgb8();
-        assert_eq!(decoded.dimensions(), (2, 1));
-        assert!(decoded.get_pixel(0, 0)[2] > decoded.get_pixel(0, 0)[0]);
-        assert!(decoded.get_pixel(1, 0)[0] > decoded.get_pixel(1, 0)[2]);
     }
 }
