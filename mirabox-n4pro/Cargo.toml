@@ -2,7 +2,12 @@
 name = "mirabox-n4pro"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = true
+repository = "https://github.com/kriomant/mirabox"
+description = "Async Rust API for communicating with the MiraBox N4 Pro"
+license = "MIT"
+keywords = ["mirabox", "hid", "tokio", "hardware"]
+categories = ["hardware-support", "asynchronous"]
 
 [dependencies]
 
