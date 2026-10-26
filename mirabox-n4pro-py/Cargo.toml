@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [lib]
-name = "mirabox"
+name = "mirabox_n4pro"
 crate-type = ["cdylib"]
 
 [dependencies]

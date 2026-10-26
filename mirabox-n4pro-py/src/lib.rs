@@ -220,7 +220,7 @@ impl PyMiraboxN4Pro {
 }
 
 #[pymodule]
-fn mirabox(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn mirabox_n4pro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMiraboxN4Pro>()?;
     m.add("PHYSICAL_BUTTON_IMAGE_SIZE", PHYSICAL_BUTTON_IMAGE_FORMAT.size)?;
     m.add("VIRTUAL_BUTTON_IMAGE_SIZE", VIRTUAL_BUTTON_IMAGE_FORMAT.size)?;

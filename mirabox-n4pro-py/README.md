@@ -9,14 +9,14 @@ For editable development, from the repository root (with [just](https://just.sys
 ```sh
 just install-maturin  # Set up maturin in mirabox-n4pro-py/.venv (optional separate step)
 just install-python   # Build and install the module; also sets up maturin
-mirabox-n4pro-py/.venv/bin/python -c 'import mirabox; print(mirabox.PHYSICAL_BUTTON_IMAGE_SIZE)'
+mirabox-n4pro-py/.venv/bin/python -c 'import mirabox_n4pro; print(mirabox_n4pro.PHYSICAL_BUTTON_IMAGE_SIZE)'
 ```
 
 The project-local `.venv` is ignored by Git. Rerun `just install-python` after changing Rust code.
 
 ```python
 import asyncio
-from mirabox import MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_SIZE
+from mirabox_n4pro import MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_SIZE
 
 async def main():
     device = await MiraboxN4Pro.connect()
