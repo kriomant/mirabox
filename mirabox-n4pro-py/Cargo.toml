@@ -9,6 +9,6 @@ name = "mirabox"
 crate-type = ["cdylib"]
 
 [dependencies]
-mirabox-core = { package = "mirabox", path = "../mirabox" }
+mirabox-core = { package = "mirabox-n4pro", path = "../mirabox-n4pro" }
 pyo3 = { version = "0.27", features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.27", features = ["tokio-runtime"] }

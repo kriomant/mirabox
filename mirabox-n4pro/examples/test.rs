@@ -1,7 +1,7 @@
 use std::{error::Error, time::Duration};
 
 use image::{DynamicImage, ImageBuffer, Rgb, codecs::jpeg::JpegEncoder};
-use mirabox::{
+use mirabox_n4pro::{
     DeviceEvent, KnobDirection, MiraboxN4Pro, PHYSICAL_BUTTON_IMAGE_FORMAT,
     VIRTUAL_BUTTON_IMAGE_FORMAT,
 };
@@ -209,7 +209,7 @@ fn encode_jpeg(image: DynamicImage) -> Result<Vec<u8>, image::ImageError> {
 mod tests {
     use super::{BRIGHTNESS_STEP, adjust_brightness, encode_jpeg, visible_report};
     use image::{DynamicImage, Rgb, RgbImage};
-    use mirabox::KnobDirection;
+    use mirabox_n4pro::KnobDirection;
 
     #[test]
     fn brightness_steps_clamp_to_each_range() {

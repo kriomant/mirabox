@@ -698,7 +698,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mirabox"
+name = "mirabox-n4pro"
 version = "0.1.0"
 dependencies = [
  "async-hid",
@@ -711,7 +711,7 @@ dependencies = [
 name = "mirabox-python"
 version = "0.1.0"
 dependencies = [
- "mirabox",
+ "mirabox-n4pro",
  "pyo3",
  "pyo3-async-runtimes",
 ]

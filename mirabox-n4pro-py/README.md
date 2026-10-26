@@ -1,15 +1,15 @@
 # MiraBox N4 Pro for Python
 
-Async Python bindings for the Rust `mirabox` crate. Requires a supported HID device and Python 3.9 or newer.
+Async Python bindings for the Rust `mirabox-n4pro` crate. Requires a supported HID device and Python 3.9 or newer.
 
-From the `python` directory, install with `python -m pip install .` (requires a Rust toolchain; pip installs maturin as the build backend).
+From the `mirabox-n4pro-py` directory, install with `python -m pip install .` (requires a Rust toolchain; pip installs maturin as the build backend).
 
 For editable development, from the repository root (with [just](https://just.systems/) and [uv](https://docs.astral.sh/uv/) installed):
 
 ```sh
-just install-maturin  # Set up maturin in python/.venv (optional separate step)
+just install-maturin  # Set up maturin in mirabox-n4pro-py/.venv (optional separate step)
 just install-python   # Build and install the module; also sets up maturin
-python/.venv/bin/python -c 'import mirabox; print(mirabox.PHYSICAL_BUTTON_IMAGE_SIZE)'
+mirabox-n4pro-py/.venv/bin/python -c 'import mirabox; print(mirabox.PHYSICAL_BUTTON_IMAGE_SIZE)'
 ```
 
 The project-local `.venv` is ignored by Git. Rerun `just install-python` after changing Rust code.
