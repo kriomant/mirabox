@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "mirabox-n4pro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-hid",
  "futures-lite",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "mirabox-python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mirabox-n4pro",
  "pyo3",
